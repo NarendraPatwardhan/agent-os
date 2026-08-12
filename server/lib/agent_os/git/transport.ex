@@ -27,7 +27,7 @@ defmodule AgentOS.Git.Transport do
 
     with {:ok, connection} <- fetch_connection(reference, connections),
          {:ok, url} <- remote_locator(args, connection),
-         {:ok, origin} <- origin(url),
+         {:ok, origin} <- require_origin(url),
          :ok <- authorize_binding(origin, connection, opts),
          :ok <- reject_query_auth(connection) do
       {:ok,
@@ -44,25 +44,30 @@ defmodule AgentOS.Git.Transport do
   @doc "Resolve host-owned origin and credentials for one effect URL."
   @spec resolve_policy(String.t(), keyword()) :: {:ok, map()} | {:error, atom()}
   def resolve_policy(url, opts) when is_binary(url) do
-    case Keyword.get(opts, :remote_binding) do
+    case Keyword.get(opts, :remote_binding, Keyword.get(opts, :remote_bindings)) do
       %{origins: origins, auth: auth} ->
-        with {:ok, origin} <- origin(url),
+        with {:ok, origin} <- require_origin(url),
              true <- allowed?(origin, origins) do
           {:ok, %{origin: origin, auth: auth}}
         else
           false -> {:error, :origin_not_allowed}
-          :error -> {:error, :bad_remote_url}
+          {:error, _} = error -> error
         end
+
+      bindings when is_list(bindings) ->
+        resolve_prebound_policy(url, bindings)
 
       _ ->
         connections = Keyword.get(opts, :connections, [])
 
-        if is_list(connections) and connections != [] do
-          resolve_connection_policy(url, connections)
-        else
-          with {:ok, origin} <- ensure_url_allowed(url, opts) do
-            {:ok, %{origin: origin, auth: Keyword.get(opts, :auth)}}
-          end
+        cond do
+          is_list(connections) and connections != [] ->
+            {:error, :origin_not_allowed}
+
+          true ->
+            with {:ok, origin} <- ensure_url_allowed(url, opts) do
+              {:ok, %{origin: origin, auth: Keyword.get(opts, :auth)}}
+            end
         end
     end
   end
@@ -114,6 +119,44 @@ defmodule AgentOS.Git.Transport do
   end
 
   def allowed?(_, _), do: false
+
+  defp require_origin(url) do
+    case origin(url) do
+      {:ok, origin} -> {:ok, origin}
+      :error -> {:error, :bad_remote_url}
+    end
+  end
+
+  defp resolve_prebound_policy(url, bindings) do
+    with {:ok, origin} <- require_origin(url) do
+      case Enum.filter(bindings, &effect_belongs_to_remote?(url, &1[:url] || &1["url"])) do
+        [%{auth: auth}] ->
+          {:ok, %{origin: origin, auth: auth}}
+
+        [] ->
+          {:error, :origin_not_allowed}
+
+        _ ->
+          {:error, :ambiguous_connection_origin}
+      end
+    end
+  end
+
+  defp effect_belongs_to_remote?(effect_url, remote_url) when is_binary(remote_url) do
+    effect = URI.parse(effect_url)
+    remote = URI.parse(remote_url)
+
+    with {:ok, effect_origin} <- origin(effect_url),
+         {:ok, remote_origin} <- origin(remote_url) do
+      root = remote.path |> to_string() |> String.trim_trailing("/")
+      path = effect.path |> to_string()
+      effect_origin == remote_origin and (path == root or String.starts_with?(path, root <> "/"))
+    else
+      _ -> false
+    end
+  end
+
+  defp effect_belongs_to_remote?(_, _), do: false
 
   defp connection_ref(args) do
     case args["connection"] || args["agentos"] || map_field(args, :connection) ||
@@ -179,34 +222,6 @@ defmodule AgentOS.Git.Transport do
   end
 
   defp reject_query_auth(_), do: :ok
-
-  defp resolve_connection_policy(url, connections) do
-    case origin(url) do
-      {:ok, requested_origin} ->
-        case Enum.filter(connections, &connection_allows?(&1, requested_origin)) do
-          [connection] ->
-            {:ok, %{origin: requested_origin, auth: map_field(connection, :auth)}}
-
-          [] ->
-            {:error, :origin_not_allowed}
-
-          _ ->
-            {:error, :ambiguous_connection_origin}
-        end
-
-      :error ->
-        {:error, :bad_remote_url}
-    end
-  end
-
-  defp connection_allows?(connection, requested_origin) when is_map(connection) do
-    case map_field(connection, :origins) do
-      origins when is_list(origins) -> allowed?(requested_origin, origins)
-      _ -> false
-    end
-  end
-
-  defp connection_allows?(_, _), do: false
 
   defp map_field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 

@@ -467,7 +467,8 @@ defmodule AgentOS.GitEngine do
       :policies,
       :http_effect,
       :max_response_bytes,
-      :remote_binding
+      :remote_binding,
+      :remote_bindings
     ])
   end
 

@@ -228,6 +228,32 @@ defmodule AgentOS.GitEngineTest do
     assert {:ok, json} = AgentOS.Git.Public.call(self(), body, connections: [github])
     assert {:ok, %{"ok" => false, "stderr" => stderr}} = AgentOS.Git.Json.decode(json)
     assert stderr =~ "origin_not_allowlisted"
+
+    assert {:error, :bad_remote_url} =
+             AgentOS.Git.Transport.resolve_remote(
+               %{"url" => "https://user:secret@github.com/org/private.git", "connection" => "github.user.work"},
+               connections: [github]
+             )
+
+    userinfo =
+      AgentOS.Git.Json.encode(%{
+        "op" => "clone",
+        "args" => %{"url" => "https://user:secret@github.com/org/private.git"}
+      })
+
+    assert {:ok, userinfo_json} =
+             AgentOS.Git.Public.call(self(), userinfo, allowed_origins: ["https://github.com"])
+
+    assert {:ok, %{"ok" => false, "stderr" => userinfo_stderr}} =
+             AgentOS.Git.Json.decode(userinfo_json)
+
+    assert userinfo_stderr =~ "without embedded credentials"
+    refute userinfo_stderr =~ "WithClauseError"
+
+    assert {:error, :origin_not_allowed} =
+             AgentOS.Git.Transport.resolve_policy("https://github.com/org/private.git",
+               connections: [github]
+             )
   end
 
   test "HTTP transport rejects unallowlisted origins and credentials in URLs" do

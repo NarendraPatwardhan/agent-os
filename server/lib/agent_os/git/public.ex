@@ -45,7 +45,7 @@ defmodule AgentOS.Git.Public do
     with {:ok, request} <- decode_request(body),
          :ok <- reject_guest_secrets(request),
          {:ok, request} <- resolve_remote_url(pid, request, opts),
-         {:ok, request, opts} <- bind_remote(request, opts),
+         {:ok, request, opts} <- bind_remote(pid, request, opts),
          :ok <- authorize_remote(request, opts),
          {:ok, opcode, payload} <- translate(request, opts),
          {:ok, response} <- GitEngine.request(pid, opcode, payload, opts) do
@@ -123,7 +123,7 @@ defmodule AgentOS.Git.Public do
 
   defp secret_arg_key?(_), do: false
 
-  defp bind_remote(%{"op" => op, "args" => args} = request, opts)
+  defp bind_remote(_pid, %{"op" => op, "args" => args} = request, opts)
        when op in ["clone", "fetch", "pull", "push"] do
     with {:ok, binding} <- Transport.resolve_remote(args, opts) do
       request = put_in(request, ["args", "url"], binding.url)
@@ -138,7 +138,45 @@ defmodule AgentOS.Git.Public do
     end
   end
 
-  defp bind_remote(request, opts), do: {:ok, request, opts}
+  defp bind_remote(pid, %{"op" => "submodule", "args" => %{"action" => "update"} = args} = request, opts) do
+    path = optional_string(Map.get(args, "path"))
+    payload = Git.encode_submodule_request(%{action: Git.action_list(), path: path})
+
+    with {:ok, %{status: status, payload: result}} <-
+           GitEngine.request(pid, Git.op_submodule(), payload, opts),
+         true <- status == Git.status_ok() || {:error, :submodule_list_failed},
+         {:ok, %{entries: entries}} <- Git.decode_submodule_result(result),
+         {:ok, bindings} <- resolve_submodule_bindings(entries, args, opts) do
+      {:ok, request, Keyword.put(opts, :remote_bindings, bindings)}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :submodule_list_failed}
+    end
+  end
+
+  defp bind_remote(_pid, request, opts), do: {:ok, request, opts}
+
+  defp resolve_submodule_bindings(entries, args, opts) do
+    reference = args["connection"] || args["agentos"]
+
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      remote_args = %{"url" => entry.url}
+
+      remote_args =
+        if is_binary(reference) and reference != "",
+          do: Map.put(remote_args, "connection", reference),
+          else: remote_args
+
+      case Transport.resolve_remote(remote_args, opts) do
+        {:ok, binding} -> {:cont, {:ok, [binding | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, bindings} -> {:ok, Enum.reverse(bindings)}
+      error -> error
+    end
+  end
 
   defp authorize_remote(%{"op" => op} = request, opts) when op in ["clone", "fetch", "pull", "push"] do
     cond do
