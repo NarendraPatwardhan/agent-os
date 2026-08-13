@@ -25,8 +25,11 @@ _elixir_platform_transition = transition(
 
 def _canonical_host_platform_impl(_settings, _attr):
     return {
-        "//command_line_option:host_platform": "@local_config_platform//:host",
-        "//command_line_option:platforms": ["@local_config_platform//:host"],
+        "//command_line_option:host_platform": "@bazel_tools//tools:host_platform",
+        # Match the repository's ordinary config exactly. An explicit host
+        # target platform is semantically similar but has a distinct Bazel
+        # configuration key and therefore does not preserve artifact identity.
+        "//command_line_option:platforms": [],
     }
 
 _canonical_host_platform_transition = transition(
