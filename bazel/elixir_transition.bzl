@@ -23,6 +23,21 @@ _elixir_platform_transition = transition(
     ],
 )
 
+def _canonical_host_platform_impl(_settings, _attr):
+    return {
+        "//command_line_option:host_platform": "@local_config_platform//:host",
+        "//command_line_option:platforms": ["@local_config_platform//:host"],
+    }
+
+_canonical_host_platform_transition = transition(
+    implementation = _canonical_host_platform_impl,
+    inputs = [],
+    outputs = [
+        "//command_line_option:host_platform",
+        "//command_line_option:platforms",
+    ],
+)
+
 def _elixir_executable_impl(ctx):
     actual_target = ctx.attr.actual[0]
     actual = actual_target[DefaultInfo]
@@ -99,6 +114,24 @@ elixir_file = rule(
         "actual": attr.label(
             mandatory = True,
             cfg = _elixir_platform_transition,
+        ),
+        "output": attr.string(),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+# Re-enter the repository's ordinary host configuration for portable/runtime
+# products consumed by an Elixir-transitioned package. Without this boundary,
+# the same kernel/image target is rebuilt under the Erlang internal host and no
+# longer has byte identity with the browser/top-level artifact.
+canonical_host_file = rule(
+    implementation = _elixir_file_impl,
+    attrs = {
+        "actual": attr.label(
+            mandatory = True,
+            cfg = _canonical_host_platform_transition,
         ),
         "output": attr.string(),
         "_allowlist_function_transition": attr.label(

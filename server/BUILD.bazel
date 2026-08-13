@@ -17,7 +17,7 @@ load("//server:package_manifest.bzl", "package_manifest")
 # (//memcontainers/hosts/wasmtime/nif:host_nif_release) is staged into priv/ and
 # loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so, mix never
 # compiles it.
-load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY", "elixir_file", "elixir_test")
+load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY", "canonical_host_file", "elixir_file", "elixir_test")
 
 _SERVER_SRCS = glob(["lib/**/*.ex"])
 
@@ -274,19 +274,28 @@ pkg_tar(
 # The runtime payload makes the package complete for a host app that consumes agent_os outside
 # Bazel: the Elixir library, NIF, kernel, and supported flavor images are one artifact. These
 # are the real graph outputs, not copied source-tree byproducts.
+canonical_host_file(name = "package_atlas", actual = "//memcontainers/images:atlas")
+canonical_host_file(name = "package_loom", actual = "//memcontainers/images:loom")
+canonical_host_file(name = "package_minimal", actual = "//memcontainers/images:minimal")
+canonical_host_file(name = "package_paper", actual = "//memcontainers/images:paper")
+canonical_host_file(name = "package_posix", actual = "//memcontainers/images:posix")
+canonical_host_file(name = "package_browser_ctl", actual = ":browser_ctl_artifact")
+canonical_host_file(name = "package_kernel", actual = "//memcontainers/kernel/rust:kernel")
+canonical_host_file(name = "package_git_engine", actual = "//memcontainers/lib/git-engine:git_engine_native_release")
+
 pkg_tar(
     name = "agent_os_package_runtime",
     create_parents = False,
     files = {
-        "//memcontainers/images:atlas": "priv/images/atlas.tar",
-        "//memcontainers/images:loom": "priv/images/loom.tar",
-        "//memcontainers/images:minimal": "priv/images/minimal.tar",
-        "//memcontainers/images:paper": "priv/images/paper.tar",
-        "//memcontainers/images:posix": "priv/images/posix.tar",
-        ":browser_ctl_artifact": "priv/browser-ctl.tar",
-        "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
+        ":package_atlas": "priv/images/atlas.tar",
+        ":package_loom": "priv/images/loom.tar",
+        ":package_minimal": "priv/images/minimal.tar",
+        ":package_paper": "priv/images/paper.tar",
+        ":package_posix": "priv/images/posix.tar",
+        ":package_browser_ctl": "priv/browser-ctl.tar",
+        ":package_kernel": "priv/kernel/kernel.wasm",
         # Native Gitz Port; no shared library or C headers.
-        "//memcontainers/lib/git-engine:git_engine_native_release": "priv/git-engine",
+        ":package_git_engine": "priv/git-engine",
     },
     mode = "0644",
     modes = {
