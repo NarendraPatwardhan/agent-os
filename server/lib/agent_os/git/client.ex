@@ -33,8 +33,13 @@ defmodule AgentOS.Git.Client do
   end
 
   @spec checkout(pid(), String.t(), keyword()) :: {:ok, result()} | {:error, term()}
-  def checkout(engine, revision, opts) when is_binary(revision),
-    do: command(engine, "checkout", %{"rev" => revision}, opts)
+  def checkout(engine, revision, opts) when is_binary(revision) do
+    args =
+      %{"rev" => revision}
+      |> maybe_put("flags", if(opts[:force], do: 1, else: nil))
+
+    command(engine, "checkout", args, opts)
+  end
 
   @spec status(pid(), keyword()) :: {:ok, result()} | {:error, term()}
   def status(engine, opts), do: command(engine, "status", %{}, opts)
