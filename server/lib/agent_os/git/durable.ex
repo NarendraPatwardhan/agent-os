@@ -181,30 +181,6 @@ defmodule AgentOS.Git.Durable do
     end
   end
 
-  @doc """
-  Validate that a native durable root still exists at checkpoint time.
-
-  Native Port writes already target this host directory. Erlang does not expose
-  a portable directory-fsync primitive, so this function makes no stronger
-  crash-durability claim than successful direct writes and later reopen.
-  """
-  @spec sync_root(String.t()) :: :ok | {:error, term()}
-  def sync_root(root) when is_binary(root) do
-    # Product acceptance is a later OP_REPOSITORY_OPEN, not a fake fsync.
-    marker = Path.join(root, ".git")
-
-    with :ok <- validate_root_components(Path.expand(root), false) do
-      case File.lstat(marker) do
-        {:ok, %{type: type}} when type in [:directory, :regular] -> :ok
-        {:error, :enoent} -> :ok
-        {:ok, _} -> {:error, :unsafe_git_root}
-        {:error, reason} -> {:error, reason}
-      end
-    end
-  end
-
-  def sync_root(_), do: {:error, :badarg}
-
   defp validate_root_components(root, create?) do
     case Path.split(root) do
       [filesystem_root] ->

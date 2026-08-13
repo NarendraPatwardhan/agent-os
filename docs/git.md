@@ -89,6 +89,11 @@ Each distinct path owns one engine and one writer. Requests select a repository 
 `args.mount`); the first attached path is the default. Duplicate paths and unknown selectors are errors.
 Snapshots are refused while a remote operation is in flight.
 
+`sparse` values are repository-relative cone-directory prefixes. They are applied after clone and on
+later checkout operations. The public `sparse-set` command replaces the configured prefixes. Negation,
+absolute paths, traversal, and the full Git sparse-checkout pattern language are intentionally outside
+this reduced surface.
+
 ## Durability
 
 Kernel snapshots do not contain host Git state. Opt into a durable backend and reattach it when restoring
@@ -115,8 +120,10 @@ The browser artifact is `git-engine.tar` containing only `git_engine.wasm`. Reso
 5. optional fetch when `MC_ARTIFACT_FETCH=1`;
 6. otherwise fail closed.
 
-The server package contains the native executable instead. Neither artifact contains C headers,
-Emscripten glue, shared libraries, or libgit2 notices.
+The server package contains the native executable instead. Both release forms carry the upstream Gitz
+Apache-2.0 license. The server package also carries `priv/package-manifest.json`, which records the Git
+contract version, exact Gitz commit, required license path, and a SHA-256 inventory of every other file.
+Neither artifact contains C headers, Emscripten glue, shared libraries, or libgit2 notices.
 
 ## LLB and advanced APIs
 

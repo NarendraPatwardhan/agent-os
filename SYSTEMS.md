@@ -1944,7 +1944,7 @@ while the contract is still soft.
 | Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                               |
 | Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external |
 | JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                           |
-| Host source plane git (shared Zig/Gitz core; freestanding JS + native BEAM Port)                   | Replacement specified on `feature/gitz`; implementation in progress (§11b) |
+| Host source plane git (shared Zig/Gitz core; freestanding JS + native BEAM Port)                   | Built; Type B engine gates are executable, Type A deployment isolation remains future (§11b.6) |
 | Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)            |
 
 The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the

@@ -231,6 +231,7 @@ function engineError(envelope: GitResponseEnvelope): Error {
     domain = detail.domain;
     code = detail.code;
     if (detail.message) message = detail.message;
+    if (detail.detail?.byteLength) message += `: ${new TextDecoder().decode(detail.detail)}`;
   } catch { /* malformed errors still fail closed */ }
   const error = new Error(message) as Error & { domain?: number; engineCode?: number; opcode?: number };
   error.domain = domain;

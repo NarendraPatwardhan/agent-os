@@ -47,7 +47,9 @@ export interface GitCreateOptions {
    * Multi-repo mounts. Default when omitted: `[{ path: "/workspace/repo" }]`.
    * Each path owns one engine (single-writer). Duplicate paths fail closed.
    */
-  mounts?: Array<{ path: string; readOnly?: boolean }>;
+  mounts?: Array<{ path: string; sparse?: string[]; readOnly?: boolean }>;
+  /** Cone-mode prefixes applied after clone and by explicit `sparse-set`. */
+  sparse?: string[];
   /**
    * When true, default mounts (and engines) reject push (dual-host with BEAM
    * `attach_git(read_only: true)`). Overridable per {@link mounts} entry.

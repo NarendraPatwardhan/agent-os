@@ -2,6 +2,7 @@ load("@aspect_bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//server:package_manifest.bzl", "package_manifest")
 
 # server — the AgentOS control-plane library (Elixir/OTP): the supervisor over wasm VMs
 # described in SYSTEMS.md §13.1. It drives VMs through host_nif and deliberately stops below
@@ -57,7 +58,7 @@ mix_library(
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
         # Native Gitz Port.
-        "//memcontainers/lib/git-engine:git-engine",
+        "//memcontainers/lib/git-engine:git_engine_native_release",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -74,7 +75,7 @@ mix_library(
     priv = [
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
-        "//memcontainers/lib/git-engine:git-engine",
+        "//memcontainers/lib/git-engine:git_engine_native_release",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -90,14 +91,14 @@ mix_test(
         "//memcontainers/images:minimal",
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
-        "//memcontainers/lib/git-engine:git-engine",
+        "//memcontainers/lib/git-engine:git_engine_native_release",
     ],
     env = {
         "ERL_COMPILER_OPTIONS": "deterministic",
         "ELIXIR_ERL_OPTIONS": "+fnu",
         # elixir_test wrapper does not expand $(rootpath)/$(rlocationpath). Path is relative
         # to the mix project root after `cd $TEST_SRCDIR/$TEST_WORKSPACE/server`.
-        "AGENTOS_GIT_ENGINE": "../memcontainers/lib/git-engine/git-engine",
+        "AGENTOS_GIT_ENGINE": "../memcontainers/lib/git-engine/git_engine_native_release",
     },
     lib = ":lib_test",
     tags = ["manual"],
@@ -191,6 +192,24 @@ elixir_test(
 # The native payload for a Mix-consuming host app. Keep it as a separate layer so the pure Elixir
 # package layout stays obvious and the platform-shaped cdylib is isolated under priv/.
 pkg_tar(
+    name = "agent_os_package_licenses",
+    create_parents = False,
+    files = {
+        "@gitz//:LICENSE": "share/licenses/gitz/LICENSE",
+    },
+    mode = "0644",
+    modes = {
+        "share": "0755",
+        "share/licenses": "0755",
+        "share/licenses/gitz": "0755",
+    },
+    owner = "0.0",
+    package_dir = "agent_os",
+    tags = ["manual"],
+    target_compatible_with = ELIXIR_ONLY,
+)
+
+pkg_tar(
     name = "agent_os_package_nif",
     create_parents = False,
     files = {
@@ -267,7 +286,7 @@ pkg_tar(
         ":browser_ctl_artifact": "priv/browser-ctl.tar",
         "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
         # Native Gitz Port; no shared library or C headers.
-        "//memcontainers/lib/git-engine:git-engine": "priv/git-engine",
+        "//memcontainers/lib/git-engine:git_engine_native_release": "priv/git-engine",
     },
     mode = "0644",
     modes = {
@@ -289,7 +308,7 @@ pkg_tar(
 # Host applications start `AgentOS.Supervisor` in their own supervision tree; the package does not
 # auto-start a server. The host can read packaged runtime assets from priv/kernel and priv/images.
 pkg_tar(
-    name = "agent_os_package_impl",
+    name = "agent_os_package_payload",
     create_parents = False,
     empty_dirs = [
         "agent_os",
@@ -303,6 +322,9 @@ pkg_tar(
         "agent_os/priv",
         "agent_os/priv/images",
         "agent_os/priv/kernel",
+        "agent_os/share",
+        "agent_os/share/licenses",
+        "agent_os/share/licenses/gitz",
     ],
     mode = "0644",
     modes = {
@@ -317,16 +339,38 @@ pkg_tar(
         "agent_os/priv": "0755",
         "agent_os/priv/images": "0755",
         "agent_os/priv/kernel": "0755",
+        "agent_os/share": "0755",
+        "agent_os/share/licenses": "0755",
+        "agent_os/share/licenses/gitz": "0755",
     },
     owner = "0.0",
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
     deps = [
         ":agent_os_package_contracts",
+        ":agent_os_package_licenses",
         ":agent_os_package_nif",
         ":agent_os_package_runtime",
         ":agent_os_package_src",
     ],
+)
+
+sh_binary(
+    name = "package_manifest",
+    srcs = ["package_manifest.sh"],
+)
+
+package_manifest(
+    name = "agent_os_package_impl",
+    payload = ":agent_os_package_payload",
+    tool = ":package_manifest",
+    gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8",
+    gitz_integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    contract_major = 1,
+    contract_minor = 0,
+    capabilities = 1,
+    build_mode = "release_safe",
+    tags = ["manual"],
 )
 
 elixir_file(

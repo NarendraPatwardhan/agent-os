@@ -7,8 +7,10 @@ const memory = @import("memory");
 const packp = @import("packp");
 const gitignore = @import("gitignore");
 const gitconfig = @import("gitconfig");
+const errors = @import("errors.zig");
+const paths_mod = @import("paths.zig");
 
-pub const gitz_commit = "24f9a126217b46d6883db28eb881e67b22d379fc";
+pub const gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8";
 pub const slot_count: usize = 64;
 
 const HandleKind = enum(u3) { result = 1, session = 2, stream = 3, remote = 4, transaction = 5 };
@@ -118,12 +120,25 @@ pub fn Engine(comptime Backend: type) type {
             return self.putResult(owner, bytes);
         }
 
+        fn classifiedErrorResponse(self: *Self, owner: u32, opcode: u16, request_id: u32, err: anyerror) u32 {
+            const classified = errors.classify(err, opcode);
+            const body = (contract.EngineError{
+                .domain = classified.domain,
+                .code = classified.code,
+                .operation = opcode,
+                .retry = classified.retry,
+            }).encode(self.allocator) catch return 0;
+            defer self.allocator.free(body);
+            const bytes = contract.encodeResponseEnvelope(self.allocator, opcode, @intCast(contract.STATUS_ERROR), request_id, body) catch return 0;
+            return self.putResult(owner, bytes);
+        }
+
         pub fn sessionOpen(self: *Self, config_bytes: []const u8, request_id: u32) u32 {
             if (config_bytes.len > contract.MAX_FRAME_BYTES) return self.errorResponse(0, @intCast(contract.OP_SESSION_OPEN), request_id, @intCast(contract.ERROR_LIMIT), 1);
             const session_config = contract.SessionConfig.decode(self.allocator, config_bytes) catch return self.errorResponse(0, @intCast(contract.OP_SESSION_OPEN), request_id, @intCast(contract.ERROR_PROTOCOL), 1);
             for (&self.sessions, 0..) |*slot, index| {
                 if (slot.value == null) {
-                    slot.value = self.backend.sessionInit(self.allocator, session_config) catch return self.errorResponse(0, @intCast(contract.OP_SESSION_OPEN), request_id, @intCast(contract.ERROR_REPOSITORY), 1);
+                    slot.value = self.backend.sessionInit(self.allocator, session_config) catch |err| return self.classifiedErrorResponse(0, @intCast(contract.OP_SESSION_OPEN), request_id, err);
                     const session_handle = makeHandle(.session, index, slot.generation);
                     const body = (contract.Result{ .kind = 1, .generation = 1, .handle = session_handle }).encode(self.allocator) catch return 0;
                     defer self.allocator.free(body);
@@ -184,7 +199,7 @@ pub fn Engine(comptime Backend: type) type {
             if (envelope.opcode == contract.OP_REPOSITORY_INIT) {
                 if (envelope.payload.len != 0) return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_PROTOCOL), 3);
                 if (self.backend.isReadOnly(&slot.value.?)) return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_USAGE), 3);
-                self.backend.repositoryInit(&slot.value.?) catch return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), 3);
+                self.backend.repositoryInit(&slot.value.?) catch |err| return self.classifiedErrorResponse(session_handle, envelope.opcode, envelope.request_id, err);
                 const generation = self.backend.generation(&slot.value.?);
                 const body = (contract.Result{ .kind = 2, .generation = generation }).encode(self.allocator) catch return 0;
                 defer self.allocator.free(body);
@@ -194,7 +209,7 @@ pub fn Engine(comptime Backend: type) type {
 
             if (envelope.opcode == contract.OP_REPOSITORY_OPEN) {
                 if (envelope.payload.len != 0) return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_PROTOCOL), 3);
-                self.backend.repositoryOpen(&slot.value.?) catch return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), 3);
+                self.backend.repositoryOpen(&slot.value.?) catch |err| return self.classifiedErrorResponse(session_handle, envelope.opcode, envelope.request_id, err);
                 const body = (contract.Result{ .kind = 2, .generation = self.backend.generation(&slot.value.?) }).encode(self.allocator) catch return 0;
                 defer self.allocator.free(body);
                 const bytes = contract.encodeResponseEnvelope(self.allocator, envelope.opcode, @intCast(contract.STATUS_OK), envelope.request_id, body) catch return 0;
@@ -202,6 +217,8 @@ pub fn Engine(comptime Backend: type) type {
             }
 
             const session = &slot.value.?;
+            if (self.backend.hasPendingRemoteApply(session))
+                return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), @intCast(contract.ERROR_CODE_CONFLICT));
             if (envelope.opcode == contract.OP_CLONE or envelope.opcode == contract.OP_FETCH or envelope.opcode == contract.OP_PULL or envelope.opcode == contract.OP_PUSH) return self.remoteStart(session_handle, session, envelope);
             if (envelope.opcode == contract.OP_HTTP_EFFECT) return self.remoteContinue(session_handle, session, envelope);
             if (envelope.opcode == contract.OP_REMOTE_CANCEL) return self.remoteCancel(session_handle, envelope);
@@ -245,7 +262,7 @@ pub fn Engine(comptime Backend: type) type {
                 contract.OP_CHECKPOINT => self.checkpoint(session, envelope.payload),
                 contract.OP_RESTORE => self.restore(session, envelope.payload),
                 else => return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_USAGE), 4),
-            } catch return self.errorResponse(session_handle, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), 5);
+            } catch |err| return self.classifiedErrorResponse(session_handle, envelope.opcode, envelope.request_id, err);
             defer self.allocator.free(body);
             const response = contract.encodeResponseEnvelope(self.allocator, envelope.opcode, @intCast(contract.STATUS_OK), envelope.request_id, body) catch return 0;
             return self.putResult(session_handle, response);
@@ -1091,9 +1108,9 @@ pub fn Engine(comptime Backend: type) type {
                 return self.errorResponse(owner, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REFERENCE), 36);
             };
             defer self.allocator.free(updates);
-            self.backend.applyReferenceUpdates(session, updates) catch {
+            self.backend.applyReferenceUpdates(session, updates) catch |err| {
                 self.freeTransactionSlot(transaction_slot);
-                return self.errorResponse(owner, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REFERENCE), 37);
+                return self.classifiedErrorResponse(owner, envelope.opcode, envelope.request_id, err);
             };
             const count: u32 = @intCast(updates.len);
             self.freeTransactionSlot(transaction_slot);
@@ -1181,7 +1198,7 @@ pub fn Engine(comptime Backend: type) type {
             const remote_name = request.remote orelse "origin";
             if (!validRemoteName(remote_name)) return self.errorResponse(owner, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_USAGE), 16);
             if (envelope.opcode != contract.OP_CLONE and session.repository == null) return self.errorResponse(owner, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), 7);
-            if (envelope.opcode == contract.OP_CLONE and session.repository == null) self.backend.repositoryInit(session) catch return self.errorResponse(owner, envelope.opcode, envelope.request_id, @intCast(contract.ERROR_REPOSITORY), 8);
+            if (envelope.opcode == contract.OP_CLONE and session.repository == null) self.backend.repositoryInit(session) catch |err| return self.classifiedErrorResponse(owner, envelope.opcode, envelope.request_id, err);
             for (&self.remotes, 0..) |*remote_slot, index| if (remote_slot.phase == .empty) {
                 remote_slot.owner = owner;
                 remote_slot.opcode = envelope.opcode;
@@ -1503,21 +1520,29 @@ pub fn Engine(comptime Backend: type) type {
                 return self.errorResponse(owner, opcode, request_id, @intCast(contract.ERROR_PACK), 2);
             };
             const name = plumbing.ReferenceName.init(remote_slot.target_ref.?);
-            const updates = [_]memory.ReferenceUpdate{.{ .name = name, .new_reference = plumbing.Reference.newHashReference(name, remote_slot.target) }};
-            const imported = self.backend.packImportFinish(session, &updates) catch {
+            const direct_update = [_]memory.ReferenceUpdate{.{ .name = name, .new_reference = plumbing.Reference.newHashReference(name, remote_slot.target) }};
+            const import_updates: []const memory.ReferenceUpdate = if (opcode == contract.OP_CLONE or opcode == contract.OP_PULL) &.{} else &direct_update;
+            const imported = self.backend.packImportFinish(session, import_updates) catch {
                 self.backend.packImportAbort(session);
                 self.freeRemoteSlot(remote_slot);
                 return self.errorResponse(owner, opcode, request_id, @intCast(contract.ERROR_PACK), 3);
             };
-            if (parsed.has_update) self.backend.shallowSet(session, parsed.shallows) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 18);
             var repository = &session.repository.?;
             if (opcode == contract.OP_CLONE) {
                 const source_name = plumbing.ReferenceName.init(remote_slot.source_ref.?);
                 if (!source_name.isBranch() or !name.isBranch()) return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 5);
                 var tracking_buf: [contract.MAX_REF_BYTES]u8 = undefined;
                 const tracking_name = plumbing.newRemoteReferenceName(remote_slot.remote_name.?, source_name.short(), &tracking_buf) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 6);
-                repository.storer.setReference(plumbing.Reference.newHashReference(tracking_name, remote_slot.target)) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 7);
-                repository.storer.setReference(plumbing.Reference.newSymbolicReference(plumbing.HEAD, name)) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 8);
+                self.backend.remoteApplyBegin(self.allocator, session, 1, name.raw, source_name.raw, remote_slot.remote_name.?, remote_slot.url.?, remote_slot.target) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 21);
+                const old_head = repository.storer.reference(plumbing.HEAD) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 7);
+                defer repository.storer.freeReference(old_head);
+                const updates = [_]memory.ReferenceUpdate{
+                    .{ .name = name, .new_reference = plumbing.Reference.newHashReference(name, remote_slot.target), .require_absent = true },
+                    .{ .name = tracking_name, .new_reference = plumbing.Reference.newHashReference(tracking_name, remote_slot.target), .require_absent = true },
+                    .{ .name = plumbing.HEAD, .new_reference = plumbing.Reference.newSymbolicReference(plumbing.HEAD, name), .expected = old_head },
+                };
+                self.backend.applyReferenceUpdates(session, &updates) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 8);
+                if (parsed.has_update) self.backend.shallowSet(session, parsed.shallows) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 18);
                 const fetch_spec = std.fmt.allocPrint(self.allocator, "+refs/heads/*:refs/remotes/{s}/*", .{remote_slot.remote_name.?}) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_INTERNAL), 1);
                 defer self.allocator.free(fetch_spec);
                 _ = repository.createRemoteFull(remote_slot.remote_name.?, &.{remote_slot.url.?}, &.{fetch_spec}, false) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 11);
@@ -1525,19 +1550,32 @@ pub fn Engine(comptime Backend: type) type {
                 var wt = repository.worktree() catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 13);
                 wt.checkout(.{ .branch = name, .force = true }) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 14);
                 self.syncConfiguredGitlinks(session) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 19);
+                self.backend.remoteApplyFinish(session) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 22);
             } else if (opcode == contract.OP_PULL) {
                 const head = repository.storer.reference(plumbing.HEAD) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 10);
                 defer repository.storer.freeReference(head);
                 if (head.type != .symbolic or !head.target.isBranch()) return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 11);
+                const head_target_raw = self.allocator.dupe(u8, head.target.raw) catch return 0;
+                defer self.allocator.free(head_target_raw);
+                const head_target = plumbing.ReferenceName.init(head_target_raw);
                 const old_tip = remote_slot.base;
                 const current_tip = repository.resolveRevision("HEAD") catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 25);
                 if (!current_tip.eql(old_tip)) return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 26);
                 const fast_forward = self.commitIsAncestor(session, old_tip, remote_slot.target) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 15);
                 if (!fast_forward) return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 16);
-                repository.storer.setReference(plumbing.Reference.newHashReference(head.target, remote_slot.target)) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 17);
+                self.backend.remoteApplyBegin(self.allocator, session, 2, head_target.raw, "", "", "", remote_slot.target) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 21);
+                const updates = [_]memory.ReferenceUpdate{
+                    .{ .name = name, .new_reference = plumbing.Reference.newHashReference(name, remote_slot.target) },
+                    .{ .name = head_target, .new_reference = plumbing.Reference.newHashReference(head_target, remote_slot.target), .expected = plumbing.Reference.newHashReference(head_target, old_tip) },
+                };
+                self.backend.applyReferenceUpdates(session, &updates) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REFERENCE), 17);
+                if (parsed.has_update) self.backend.shallowSet(session, parsed.shallows) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 18);
                 var wt = repository.worktree() catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 15);
-                wt.checkout(.{ .branch = head.target, .force = true }) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 16);
+                wt.checkout(.{ .branch = head_target, .force = true }) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 16);
                 self.syncConfiguredGitlinks(session) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 20);
+                self.backend.remoteApplyFinish(session) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 22);
+            } else if (parsed.has_update) {
+                self.backend.shallowSet(session, parsed.shallows) catch return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 18);
             }
             bumpGeneration(session);
             const updated_ref = plumbing.Reference.newHashReference(name, remote_slot.target);
@@ -1873,21 +1911,8 @@ pub fn Engine(comptime Backend: type) type {
     };
 }
 
-fn validatePath(path: []const u8) !void {
-    if (path.len == 0 or path.len > contract.MAX_PATH_BYTES or path[0] == '/' or std.mem.indexOfScalar(u8, path, 0) != null or std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidPath;
-    var components = std.mem.splitScalar(u8, path, '/');
-    var first = true;
-    while (components.next()) |component| {
-        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidPath;
-        if (first and std.mem.eql(u8, component, ".git")) return error.ReservedPath;
-        first = false;
-    }
-}
-
-fn validateDirectoryPath(path: []const u8) !void {
-    if (path.len == 0 or std.mem.eql(u8, path, ".")) return;
-    try validatePath(path);
-}
+const validatePath = paths_mod.validate;
+const validateDirectoryPath = paths_mod.validateDirectory;
 
 fn validRemoteUrl(url: []const u8) bool {
     if (url.len == 0 or url.len > contract.MAX_PATH_BYTES or std.mem.indexOfScalar(u8, url, 0) != null) return false;

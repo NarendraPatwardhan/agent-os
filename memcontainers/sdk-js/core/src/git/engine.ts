@@ -38,6 +38,7 @@ import {
   OP_RESET,
   OP_RESOLVE_REVISION,
   OP_SHOW,
+  OP_SPARSE,
   OP_STATUS,
   OP_SUBMODULE,
   OP_TAG,
@@ -161,6 +162,7 @@ export class GitEngine {
     readonly readOnly: boolean,
     private readonly durable: DurableBackend | undefined,
     identityValue: GitIdentity | undefined,
+    readonly sparsePaths: readonly string[],
   ) {
     this.identity = identity(identityValue);
   }
@@ -174,7 +176,7 @@ export class GitEngine {
       readOnly: !!opts.readOnly,
       restore: restore ? owned(restore) : undefined,
     });
-    const engine = new GitEngine(bridge, !!opts.readOnly, durable, opts.identity);
+    const engine = new GitEngine(bridge, !!opts.readOnly, durable, opts.identity, [...(opts.sparse ?? [])]);
     engine.snapshot = restore?.slice() ?? null;
     try {
       bridge.execute(restore ? OP_REPOSITORY_OPEN : OP_REPOSITORY_INIT);
@@ -265,6 +267,9 @@ export class GitEngine {
             action: resetAction(args.mode),
             revision: stringArg(args, "rev", "revision") ?? "HEAD",
           });
+          case "sparse-set":
+          case "sparse":
+            return this.applySparseUnlocked(pathsArg(args));
           case "branch": return rawPorcelainRequest(this.bridge, OP_BRANCH, {
             ...porcelain(args),
             action: stringArg(args, "name") ? (args.delete === true ? ACTION_DELETE : ACTION_CREATE) : ACTION_LIST,
@@ -311,6 +316,21 @@ export class GitEngine {
         return failure(error instanceof Error ? error.message : String(error));
       }
     });
+  }
+
+  /** Called by the remote pump while it already owns the bridge serialization queue. */
+  applyConfiguredSparseUnlocked(): GitResponse {
+    return this.sparsePaths.length === 0
+      ? success()
+      : this.applySparseUnlocked(Object.fromEntries(this.sparsePaths.map((path) => [path, ""])));
+  }
+
+  private applySparseUnlocked(paths: Record<string, string>): GitResponse {
+    return resultResponse(owned(this.bridge.execute(OP_SPARSE, owned(encodePorcelainRequest({
+      action: ACTION_LIST,
+      flags: 0,
+      paths,
+    }))).payload));
   }
 
   async fileStat(path: string): Promise<FileResult> {

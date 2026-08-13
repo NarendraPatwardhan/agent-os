@@ -167,6 +167,10 @@ try {
       assert.equal(git(upstream, ["show", "-s", "--format=%P", "HEAD"]), commit.stdout?.trim());
       assert.equal((await pump.handle({ op: "fetch", args: { url } })).ok, true);
       assert.equal((await engine.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout?.trim(), commit.stdout?.trim());
+      assert.equal(
+        (await engine.run({ op: "rev-parse", args: { rev: "refs/remotes/origin/main" } })).stdout?.trim(),
+        upstreamTip,
+      );
       const importedCommit = await engine.run({ op: "show", args: { rev: upstreamTip } });
       assert.equal(importedCommit.ok, true, JSON.stringify(importedCommit));
       const rawCommit = decodeObjectResult(engine.bridge.execute(OP_OBJECT, Uint8Array.from(encodeObjectRequest({
@@ -181,7 +185,16 @@ try {
       assert.equal(rejectedPull.ok, false);
       assert.equal(new TextDecoder().decode(await engine.fileRead("README.md")), "dirty local\n");
       assert.equal((await engine.run({ op: "reset", args: { mode: "hard", rev: "HEAD" } })).ok, true);
-      assert.equal((await pump.handle({ op: "pull", args: { url } })).ok, true);
+      const resetHead = await engine.run({ op: "rev-parse", args: { rev: "HEAD" } });
+      assert.equal(resetHead.stdout?.trim(), commit.stdout?.trim(), JSON.stringify(resetHead));
+      const resetStatus = await engine.run({ op: "status" });
+      assert.equal(resetStatus.stdout, "", JSON.stringify(resetStatus));
+      assert.equal(
+        (await engine.run({ op: "rev-parse", args: { rev: "refs/remotes/origin/main" } })).stdout?.trim(),
+        upstreamTip,
+      );
+      const recoveredPull = await pump.handle({ op: "pull", args: { url } });
+      assert.equal(recoveredPull.ok, true, JSON.stringify(recoveredPull));
       assert.equal(new TextDecoder().decode(await engine.fileRead("README.md")), "upstream changed\n");
     } finally { await engine.close(); }
   } finally {

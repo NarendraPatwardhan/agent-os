@@ -58,4 +58,6 @@ export interface GitEngineLoadOptions {
    * Never synthesizes a default identity when unset.
    */
   identity?: GitIdentity;
+  /** Cone-mode prefixes retained for application after clone. */
+  sparse?: string[];
 }

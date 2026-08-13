@@ -43,6 +43,10 @@ build --sandbox_add_mount_pair=/tmp
 # Show what actually failed, not a wall of passing output.
 test --test_output=errors
 
+# Release/package provenance is sourced from the checked-out Git revision. The
+# package rule rejects a dirty marker rather than publishing false provenance.
+build --workspace_status_command=bazel/workspace_status.sh
+
 # TypeScript: tsc is the transpiler — typecheck + JS emit in one pass, no swc/babel lane to keep in
 # sync. rules_ts requires an explicit choice; this is it, repo-wide.
 common --@aspect_rules_ts//ts:default_to_tsc_transpiler

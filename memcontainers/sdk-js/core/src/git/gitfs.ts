@@ -1,6 +1,16 @@
 /** Thin VM mount relay. Path, sparse, symlink, and metadata semantics live in Zig. */
 
 import type { Driver, DriverEntry, DriverError, DriverMeta } from "../types.js";
+import {
+  ERROR_CODE_DENIED,
+  ERROR_CODE_EXISTS,
+  ERROR_CODE_INVALID,
+  ERROR_CODE_IS_DIRECTORY,
+  ERROR_CODE_MISSING,
+  ERROR_CODE_NOT_DIRECTORY,
+  ERROR_CODE_NOT_EMPTY,
+  ERROR_PATH,
+} from "@mc/contracts/git";
 import type { GitEngine } from "./engine.js";
 
 export const GITFS_DRIVER_KIND = Symbol.for("agentos.gitfs");
@@ -117,8 +127,21 @@ function driverError(error: unknown, path: string): DriverError {
   if (error && typeof error === "object" && "code" in error) return error as DriverError;
   const value = error as { domain?: number; engineCode?: number; message?: string } | undefined;
   const out = new Error(value?.message ?? path) as DriverError;
-  // The engine owns fine-grained path semantics. Domain 3 is a path error;
-  // other failures are surfaced as I/O errors without reinterpreting paths here.
-  if (value?.domain === 3) out.code = "ENOENT";
+  if (value?.domain === ERROR_PATH) {
+    out.code = pathErrorCode(value.engineCode);
+  }
   return out;
+}
+
+function pathErrorCode(code: number | undefined): DriverError["code"] {
+  switch (code) {
+    case ERROR_CODE_MISSING: return "ENOENT";
+    case ERROR_CODE_EXISTS: return "EEXIST";
+    case ERROR_CODE_NOT_DIRECTORY: return "ENOTDIR";
+    case ERROR_CODE_IS_DIRECTORY: return "EISDIR";
+    case ERROR_CODE_NOT_EMPTY: return "ENOTEMPTY";
+    case ERROR_CODE_INVALID: return "EINVAL";
+    case ERROR_CODE_DENIED: return "EACCES";
+    default: return undefined;
+  }
 }

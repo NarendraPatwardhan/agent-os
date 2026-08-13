@@ -60,16 +60,14 @@ defmodule AgentOS.GitEngine do
     :exit, reason -> {:error, {:port_exit, reason}}
   end
 
-  @doc "Ask the engine to checkpoint its repository state, then validate durable placement."
+  @doc "Ask the engine to durably checkpoint its repository state."
   @spec checkpoint(pid()) :: :ok | {:error, term()}
   def checkpoint(pid) do
     with {:ok, %{status: status}} when status == @status_ok <-
-           request(pid, Git.op_checkpoint()),
-         root when is_binary(root) <- root(pid) do
-      Durable.sync_root(root)
+           request(pid, Git.op_checkpoint()) do
+      :ok
     else
       {:ok, response} -> {:error, {:engine, response}}
-      nil -> {:error, :no_root}
       {:error, _} = error -> error
     end
   end
@@ -154,69 +152,71 @@ defmodule AgentOS.GitEngine do
 
   defp continue_effect(state, response, opts) do
     with {:ok, effect} <- Git.decode_http_effect(response.payload),
-         {:ok, request_body, state2} <- drain_effect_body(state, effect.body),
-         {:ok, http_response} <- AgentOS.Git.Http.perform(effect, request_body, opts) do
-      deliver_http_response(state2, response, http_response, opts)
+         {:ok, request_body, state2} <- drain_effect_body(state, effect.body) do
+      result =
+        AgentOS.Git.Http.stream(
+          effect,
+          request_body,
+          opts,
+          state2,
+          &consume_http_event(response, &1, &2)
+        )
+
+      cleanup_body_source(request_body)
+
+      case result do
+        {:ok, state3} ->
+          with {:ok, final, state4} <- finish_http_effect(state3, response) do
+            if final.status == @status_effect,
+              do: continue_effect(state4, final, opts),
+              else: {:ok, final, state4}
+          end
+
+        {:halt, final, state3} ->
+          {:ok, final, state3}
+
+        {:error, reason, state3} ->
+          abort_effect(state3, response, reason, opts)
+      end
     else
-      {:error, reason, state2} -> abort_effect(state2, response, reason, opts)
+      {:error, reason, state2} ->
+        abort_effect(state2, response, reason, opts)
+
       {:error, reason} ->
         abort_effect(state, response, reason, opts)
     end
   end
 
-  defp deliver_http_response(state, pending, response, opts) do
-    begin = %{
+  defp consume_http_event(pending, {:begin, status, headers}, state) do
+    message = %{
       exchange: effect_exchange(pending.payload),
       action: Git.http_response_begin(),
-      status: response.status,
-      headers: response.headers,
+      status: status,
+      headers: headers,
       data: nil,
       error_code: nil
     }
 
-    case acknowledge_http_effect(state, pending, begin) do
-      {:terminal, final, state1} ->
-        {:ok, final, state1}
-
-      {:ok, state1} ->
-        case deliver_http_chunks(state1, pending, response.body) do
-          {:terminal, final, state2} ->
-            {:ok, final, state2}
-
-          {:ok, state2} ->
-            with {:ok, final, state3} <- finish_http_effect(state2, pending) do
-              if final.status == @status_effect,
-                do: continue_effect(state3, final, opts),
-                else: {:ok, final, state3}
-            end
-
-          {:error, reason, state2} ->
-            abort_effect(state2, pending, reason, opts)
-        end
-
-      {:error, reason, state1} ->
-        abort_effect(state1, pending, reason, opts)
+    case acknowledge_http_effect(state, pending, message) do
+      {:ok, state2} -> {:cont, state2}
+      {:terminal, response, state2} -> {:halt, response, state2}
+      {:error, reason, state2} -> {:error, reason, state2}
     end
   end
 
-  defp deliver_http_chunks(state, _pending, <<>>), do: {:ok, state}
-
-  defp deliver_http_chunks(state, pending, body) do
-    size = min(byte_size(body), Git.max_field_bytes())
-    <<chunk::binary-size(^size), rest::binary>> = body
-
+  defp consume_http_event(pending, {:chunk, bytes}, state) do
     message = %{
       exchange: effect_exchange(pending.payload),
       action: Git.http_response_chunk(),
       status: nil,
       headers: %{},
-      data: chunk,
+      data: bytes,
       error_code: nil
     }
 
     case acknowledge_http_effect(state, pending, message) do
-      {:ok, state2} -> deliver_http_chunks(state2, pending, rest)
-      {:terminal, _response, _state2} = terminal -> terminal
+      {:ok, state2} -> {:cont, state2}
+      {:terminal, response, state2} -> {:halt, response, state2}
       {:error, reason, state2} -> {:error, reason, state2}
     end
   end
@@ -261,12 +261,14 @@ defmodule AgentOS.GitEngine do
       {:ok, _response, state2} ->
         {:ok, state2}
 
-      {:error, reason, state2} -> {:error, reason, state2}
+      {:error, reason, state2} ->
+        {:error, reason, state2}
     end
   end
 
   defp send_http_effect(state, pending, message, phase) do
     payload = Git.encode_http_response(message)
+
     envelope =
       Git.encode_request_envelope(
         Git.op_http_effect(),
@@ -306,12 +308,28 @@ defmodule AgentOS.GitEngine do
   defp drain_effect_body(state, nil), do: {:ok, <<>>, state}
 
   defp drain_effect_body(state, handle) when is_integer(handle) and handle > 0 do
-    drain_effect_body(state, handle, 0, [], 0)
+    path = spool_path("request")
+
+    case File.open(path, [:write, :binary, :exclusive]) do
+      {:ok, file} ->
+        case drain_effect_body(state, handle, 0, file, path, 0) do
+          {:ok, _source, _state} = result ->
+            result
+
+          {:error, _reason, _state} = error ->
+            File.close(file)
+            File.rm(path)
+            error
+        end
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
   end
 
   defp drain_effect_body(state, _), do: {:error, :invalid_stream_handle, state}
 
-  defp drain_effect_body(state, handle, offset, chunks, total) do
+  defp drain_effect_body(state, handle, offset, file, path, total) do
     payload =
       Git.encode_stream_request(%{
         action: Git.stream_read(),
@@ -325,19 +343,23 @@ defmodule AgentOS.GitEngine do
          true <- response.status == @status_ok || {:error, :stream_read_failed},
          {:ok, chunk} <- Git.decode_stream_chunk(response.payload),
          true <- chunk.handle == handle || {:error, :stream_handle_mismatch},
-         true <- chunk.offset_low == Bitwise.band(offset, 0xFFFFFFFF) ||
-                   {:error, :stream_offset_mismatch},
-         true <- chunk.done or byte_size(chunk.data) > 0 || {:error, :stream_stalled},
+         true <-
+           chunk.offset_low == Bitwise.band(offset, 0xFFFFFFFF) ||
+             {:error, :stream_offset_mismatch},
+         true <- (chunk.done or byte_size(chunk.data) > 0) || {:error, :stream_stalled},
          next_total <- total + byte_size(chunk.data),
-         true <- next_total <= Git.max_pack_bytes() || {:error, :stream_too_large} do
+         true <- next_total <= Git.max_pack_bytes() || {:error, :stream_too_large},
+         :ok <- IO.binwrite(file, chunk.data) do
       if chunk.done do
-        close_stream(state2, handle, [chunk.data | chunks])
+        :ok = File.close(file)
+        close_stream(state2, handle, {:file, path})
       else
         drain_effect_body(
           state2,
           handle,
           offset + byte_size(chunk.data),
-          [chunk.data | chunks],
+          file,
+          path,
           next_total
         )
       end
@@ -347,7 +369,7 @@ defmodule AgentOS.GitEngine do
     end
   end
 
-  defp close_stream(state, handle, chunks) do
+  defp close_stream(state, handle, source) do
     payload =
       Git.encode_stream_request(%{
         action: Git.stream_close(),
@@ -359,7 +381,7 @@ defmodule AgentOS.GitEngine do
 
     case transact(state, Git.op_stream(), payload) do
       {:ok, %{status: @status_ok}, state2} ->
-        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary(), state2}
+        {:ok, source, state2}
 
       {:ok, _, state2} ->
         {:error, :stream_close_failed, state2}
@@ -367,6 +389,16 @@ defmodule AgentOS.GitEngine do
       {:error, reason, state2} ->
         {:error, reason, state2}
     end
+  end
+
+  defp cleanup_body_source({:file, path}), do: File.rm(path)
+  defp cleanup_body_source(_), do: :ok
+
+  defp spool_path(kind) do
+    Path.join(
+      System.tmp_dir!(),
+      "agentos-git-engine-#{kind}-#{System.unique_integer([:positive, :monotonic])}"
+    )
   end
 
   defp transact(state, opcode, payload) do
@@ -466,6 +498,7 @@ defmodule AgentOS.GitEngine do
       :connections,
       :policies,
       :http_effect,
+      :http_executor,
       :max_response_bytes,
       :remote_binding,
       :remote_bindings

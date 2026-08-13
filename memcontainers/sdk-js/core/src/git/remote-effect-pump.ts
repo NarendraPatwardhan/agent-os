@@ -22,6 +22,7 @@ import {
   STATUS_EFFECT,
   STATUS_OK,
   decodeHttpEffect,
+  decodeEngineError,
   decodeRemoteResult,
   decodeStreamChunk,
   decodeSubmoduleResult,
@@ -67,8 +68,15 @@ export class GitRemoteEffectPump {
     // Hold the engine's one queue for the complete remote state machine,
     // including HTTP waits. Local operations cannot observe an intermediate
     // advertisement/import/ref-update phase.
-    return this.engine.bridge.serial(() => this.handleUnlocked(request)).catch((error) =>
-      fail(error instanceof Error ? error.message : "Git remote operation failed"));
+    return this.engine.bridge.serial(() => this.handleUnlocked(request)).catch((error) => {
+      if (error instanceof Error) {
+        const typed = error as Error & { domain?: number; engineCode?: number };
+        const suffix = typed.domain !== undefined && typed.engineCode !== undefined
+          ? ` (${typed.domain}:${typed.engineCode})` : "";
+        return fail(error.message + suffix);
+      }
+      return fail("Git remote operation failed");
+    });
   }
 
   private async handleUnlocked(request: GitRequest): Promise<GitResponse> {
@@ -117,8 +125,19 @@ export class GitRemoteEffectPump {
       response = await this.performHttpEffect(effect, resolved.binding.url,
         spliceCredentialHeaders(resolved.binding.auth), response.requestId);
     }
-    if (response.status !== STATUS_OK) return fail("Git remote operation failed");
+    if (response.status !== STATUS_OK) {
+      try {
+        const error = decodeEngineError(owned(response.payload));
+        return fail(`Git remote operation failed (${error.domain}:${error.code})`);
+      } catch {
+        return fail("Git remote operation failed");
+      }
+    }
     const result = decodeRemoteResult(owned(response.payload));
+    if (op === "clone" && this.engine.sparsePaths.length > 0) {
+      const sparse = this.engine.applyConfiguredSparseUnlocked();
+      if (!sparse.ok) return sparse;
+    }
     return { ok: true, code: 0, stdout: "", stderr: "", result };
   }
 

@@ -129,6 +129,16 @@ constant "ERROR_PERSISTENCE" value=12
 constant "ERROR_LIMIT" value=13
 constant "ERROR_CANCELLED" value=14
 constant "ERROR_INTERNAL" value=15
+// Stable codes shared across domains. Consumers combine domain + code.
+constant "ERROR_CODE_INVALID" value=1
+constant "ERROR_CODE_MISSING" value=2
+constant "ERROR_CODE_EXISTS" value=3
+constant "ERROR_CODE_NOT_DIRECTORY" value=4
+constant "ERROR_CODE_IS_DIRECTORY" value=5
+constant "ERROR_CODE_NOT_EMPTY" value=6
+constant "ERROR_CODE_DENIED" value=7
+constant "ERROR_CODE_STALE" value=8
+constant "ERROR_CODE_CONFLICT" value=9
 
 // Payload codecs. The outer request/response header is AOGQ/AOGR and carries
 // opcode, request ID, status/flags, and payload length.

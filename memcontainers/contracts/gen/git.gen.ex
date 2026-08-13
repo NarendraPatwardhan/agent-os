@@ -234,6 +234,24 @@ defmodule AgentOS.Contracts.Git do
   def error_cancelled, do: @error_cancelled
   @error_internal 15
   def error_internal, do: @error_internal
+  @error_code_invalid 1
+  def error_code_invalid, do: @error_code_invalid
+  @error_code_missing 2
+  def error_code_missing, do: @error_code_missing
+  @error_code_exists 3
+  def error_code_exists, do: @error_code_exists
+  @error_code_not_directory 4
+  def error_code_not_directory, do: @error_code_not_directory
+  @error_code_is_directory 5
+  def error_code_is_directory, do: @error_code_is_directory
+  @error_code_not_empty 6
+  def error_code_not_empty, do: @error_code_not_empty
+  @error_code_denied 7
+  def error_code_denied, do: @error_code_denied
+  @error_code_stale 8
+  def error_code_stale, do: @error_code_stale
+  @error_code_conflict 9
+  def error_code_conflict, do: @error_code_conflict
 
 
   defp field!(map, key) do

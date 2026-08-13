@@ -128,8 +128,10 @@ function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
     readOnly: git.readOnly,
     mounts: git.mounts?.map((m) => ({
       path: m.path,
+      sparse: m.sparse ? [...m.sparse] : undefined,
       readOnly: m.readOnly,
     })),
+    sparse: git.sparse ? [...git.sparse] : undefined,
     identity: git.identity ? { name: git.identity.name, email: git.identity.email } : undefined,
     durable: git.durable ? { id: git.durable.id, diskDir: git.durable.diskDir } : undefined,
     allowOrigins: git.allowOrigins ? [...git.allowOrigins] : undefined,
@@ -151,7 +153,7 @@ function normalizeCreateGit(git: CreateOptions["git"]): GitCreateOptions | undef
 }
 
 /** One create-time mount: guest path plus mutability policy for that engine. */
-type GitMountSpec = { path: string; readOnly?: boolean };
+type GitMountSpec = { path: string; sparse?: string[]; readOnly?: boolean };
 
 /**
  * Resolve the mount list for host git: explicit `git.mounts`, or a single
@@ -161,10 +163,11 @@ function gitMountSpecsFromCreate(git: GitCreateOptions): GitMountSpec[] {
   if (git.mounts && git.mounts.length > 0) {
     return git.mounts.map((m) => ({
       path: m.path,
+      sparse: m.sparse,
       readOnly: m.readOnly ?? git.readOnly,
     }));
   }
-  return [{ path: "/workspace/repo", readOnly: git.readOnly }];
+  return [{ path: "/workspace/repo", sparse: git.sparse, readOnly: git.readOnly }];
 }
 
 /**
@@ -279,6 +282,7 @@ async function bootstrapHostGit(
       const eng = await GitEngine.load({
         engine: gitCfg.engine,
         identity: gitCfg.identity,
+        sparse: spec.sparse,
         readOnly,
         ...(durable ? { durable } : {}),
       });

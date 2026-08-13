@@ -115,6 +115,15 @@ pub const ERROR_PERSISTENCE: u32 = 12;
 pub const ERROR_LIMIT: u32 = 13;
 pub const ERROR_CANCELLED: u32 = 14;
 pub const ERROR_INTERNAL: u32 = 15;
+pub const ERROR_CODE_INVALID: u32 = 1;
+pub const ERROR_CODE_MISSING: u32 = 2;
+pub const ERROR_CODE_EXISTS: u32 = 3;
+pub const ERROR_CODE_NOT_DIRECTORY: u32 = 4;
+pub const ERROR_CODE_IS_DIRECTORY: u32 = 5;
+pub const ERROR_CODE_NOT_EMPTY: u32 = 6;
+pub const ERROR_CODE_DENIED: u32 = 7;
+pub const ERROR_CODE_STALE: u32 = 8;
+pub const ERROR_CODE_CONFLICT: u32 = 9;
 
 
 const std = @import("std");

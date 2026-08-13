@@ -39,7 +39,12 @@ defmodule AgentOS.GitEngineTest do
       }
 
       commit =
-        porcelain(action: Git.action_create(), message: "typed commit", author: signature, committer: signature)
+        porcelain(
+          action: Git.action_create(),
+          message: "typed commit",
+          author: signature,
+          committer: signature
+        )
 
       assert {:ok, %{status: status, payload: payload}} =
                GitEngine.request(pid, Git.op_commit(), commit)
@@ -69,6 +74,7 @@ defmodule AgentOS.GitEngineTest do
     try do
       assert {:ok, first} = GitEngine.start(executable: engine_path(), root: root)
       assert_ok(GitEngine.request(first, Git.op_repository_init()))
+      assert :ok = GitEngine.checkpoint(first)
       assert :ok = GitEngine.stop(first)
 
       assert {:ok, second} = GitEngine.start(executable: engine_path(), root: root)
@@ -76,6 +82,47 @@ defmodule AgentOS.GitEngineTest do
       assert :ok = GitEngine.stop(second)
     after
       File.rm_rf(root)
+    end
+  end
+
+  test "native Port rejects symlink-component escape for reads and writes" do
+    base = temp_root("containment")
+    root = Path.join(base, "root")
+    outside = Path.join(base, "outside")
+    File.mkdir_p!(root)
+    File.mkdir_p!(outside)
+    sentinel = Path.join(outside, "sentinel")
+    File.write!(sentinel, "unchanged")
+    File.ln_s!("../outside", Path.join(root, "escape"))
+
+    try do
+      assert {:ok, pid} = GitEngine.start(executable: engine_path(), root: root)
+
+      for {opcode, data} <- [{Git.op_file_read(), nil}, {Git.op_file_write(), "changed"}] do
+        payload =
+          Git.encode_file_request(%{
+            path: "escape/sentinel",
+            other_path: nil,
+            mode: nil,
+            offset_low: nil,
+            offset_high: nil,
+            data: data,
+            handle: nil
+          })
+
+        assert {:ok, %{status: status, payload: error_payload}} =
+                 GitEngine.request(pid, opcode, payload)
+
+        assert status == Git.status_error()
+        assert {:ok, error} = Git.decode_engine_error(error_payload)
+        assert error.domain == Git.error_path()
+        assert error.code == Git.error_code_invalid()
+      end
+
+      assert File.read!(sentinel) == "unchanged"
+      assert :ok = GitEngine.stop(pid)
+    after
+      File.rm_rf(base)
     end
   end
 
@@ -87,22 +134,56 @@ defmodule AgentOS.GitEngineTest do
       identity = %{name: "Public Test", email: "public@example.invalid"}
 
       assert_public_ok(pid, %{"op" => "init"}, identity: identity)
-      assert_public_ok(pid, %{"op" => "write", "args" => %{"path" => "a.txt", "content" => "one\n"}}, identity: identity)
+
+      assert_public_ok(
+        pid,
+        %{"op" => "write", "args" => %{"path" => "a.txt", "content" => "one\n"}},
+        identity: identity
+      )
+
       assert_public_ok(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}}, identity: identity)
-      assert_public_ok(pid, %{"op" => "commit", "args" => %{"message" => "first"}}, identity: identity)
-      assert_public_ok(pid, %{"op" => "write", "args" => %{"path" => "b.txt", "content" => "two\n"}}, identity: identity)
+
+      assert_public_ok(pid, %{"op" => "commit", "args" => %{"message" => "first"}},
+        identity: identity
+      )
+
+      assert_public_ok(
+        pid,
+        %{"op" => "write", "args" => %{"path" => "b.txt", "content" => "two\n"}},
+        identity: identity
+      )
+
       assert_public_ok(pid, %{"op" => "add", "args" => %{"path" => "b.txt"}}, identity: identity)
 
       diff = public_ok(pid, %{"op" => "diff", "args" => %{"cached" => true}}, identity: identity)
       assert diff["stdout"] =~ "b.txt"
 
-      assert_public_ok(pid, %{"op" => "commit", "args" => %{"message" => "second"}}, identity: identity)
+      assert_public_ok(pid, %{"op" => "commit", "args" => %{"message" => "second"}},
+        identity: identity
+      )
+
       log = public_ok(pid, %{"op" => "log"}, identity: identity)
       assert log["ok"]
       assert is_binary(log["stdout"])
       assert log["stdout"] != ""
 
-      assert_public_ok(pid, %{"op" => "reset", "args" => %{"mode" => "mixed", "rev" => "HEAD"}}, identity: identity)
+      assert_public_ok(pid, %{"op" => "reset", "args" => %{"mode" => "mixed", "rev" => "HEAD"}},
+        identity: identity
+      )
+
+      assert {:ok, missing_json} =
+               AgentOS.Git.Public.call(
+                 pid,
+                 AgentOS.Git.Json.encode(%{"op" => "rev-parse", "args" => %{"rev" => "missing"}}),
+                 identity: identity
+               )
+
+      assert {:ok, %{"ok" => false, "error" => error}} = AgentOS.Git.Json.decode(missing_json)
+      assert is_integer(error["domain"])
+      assert is_integer(error["code"])
+      assert is_integer(error["operation"])
+      assert is_integer(error["retry"])
+
       assert :ok = GitEngine.stop(pid)
     after
       File.rm_rf(root)
@@ -131,7 +212,10 @@ defmodule AgentOS.GitEngineTest do
       })
 
     assert {:ok, nested_json} = AgentOS.Git.Public.call(self(), nested, [])
-    assert {:ok, %{"ok" => false, "stderr" => nested_stderr}} = AgentOS.Git.Json.decode(nested_json)
+
+    assert {:ok, %{"ok" => false, "stderr" => nested_stderr}} =
+             AgentOS.Git.Json.decode(nested_json)
+
     assert nested_stderr =~ "credential material"
 
     push =
@@ -170,7 +254,9 @@ defmodule AgentOS.GitEngineTest do
              ])
 
     assert :block = AgentOS.Git.Public.evaluate_push_policy("*", :not_a_list)
-    assert :block = AgentOS.Git.Public.evaluate_push_policy("*", [%{pattern: "*", action: "deny"}])
+
+    assert :block =
+             AgentOS.Git.Public.evaluate_push_policy("*", [%{pattern: "*", action: "deny"}])
 
     assert {:ok, unknown} =
              AgentOS.Git.Public.call(self(), push,
@@ -203,13 +289,19 @@ defmodule AgentOS.GitEngineTest do
 
     assert {:ok, %{auth: %{token: "gh-token"}, connection_ref: "github.user.work"}} =
              AgentOS.Git.Transport.resolve_remote(
-               %{"url" => "https://github.com/org/private.git", "connection" => "github.user.work"},
+               %{
+                 "url" => "https://github.com/org/private.git",
+                 "connection" => "github.user.work"
+               },
                connections: [github, gitlab]
              )
 
     assert {:error, :origin_not_allowed} =
              AgentOS.Git.Transport.resolve_remote(
-               %{"url" => "https://github.com/org/private.git", "connection" => "gitlab.user.work"},
+               %{
+                 "url" => "https://github.com/org/private.git",
+                 "connection" => "gitlab.user.work"
+               },
                connections: [github, gitlab]
              )
 
@@ -231,7 +323,10 @@ defmodule AgentOS.GitEngineTest do
 
     assert {:error, :bad_remote_url} =
              AgentOS.Git.Transport.resolve_remote(
-               %{"url" => "https://user:secret@github.com/org/private.git", "connection" => "github.user.work"},
+               %{
+                 "url" => "https://user:secret@github.com/org/private.git",
+                 "connection" => "github.user.work"
+               },
                connections: [github]
              )
 

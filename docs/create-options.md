@@ -206,8 +206,8 @@ When `git` is set:
   remotes, and mounts gitfs at `/workspace/repo` unless that path is already present in `mounts`
   or overridden by `git.mounts`;
 - optional **`sparse`** applies **cone-mode** prefixes to the default mount and to post-clone
-  engine `sparse-set`. Multi-pattern strings/arrays and basic `!path` negation are accepted —
-  **not** full git sparse-checkout pattern language;
+  engine `sparse-set`. Values are repository-relative cone-directory prefixes; negation and the
+  full git sparse-checkout pattern language are rejected;
 - optional **`mounts: [{ path, sparse? }]`** enables multi-repo: one engine per distinct path,
   demux via `args.mount` / `mount` on host_call `"git"`. Duplicate paths fail closed;
 - optional **`identity: { name, email }`** is the host commit identity when commit args omit

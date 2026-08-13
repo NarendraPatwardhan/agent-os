@@ -3,6 +3,18 @@ const contract = @import("git_zig");
 const core = @import("core");
 const Browser = @import("browser_backend").Browser;
 
+test "generated envelope decoders are fuzzable hostile-input boundaries" {
+    try std.testing.fuzz({}, fuzzEnvelopes, .{});
+}
+
+fn fuzzEnvelopes(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [4096]u8 = undefined;
+    const length = smith.slice(&buffer);
+    const bytes = buffer[0..length];
+    if (contract.decodeRequestEnvelope(bytes)) |_| {} else |_| {}
+    if (contract.decodeResponseEnvelope(bytes)) |_| {} else |_| {}
+}
+
 test "session and result handles are generational" {
     var engine = core.Engine(Browser).init(std.testing.allocator, .{});
     defer engine.deinit();

@@ -22,6 +22,13 @@ defmodule AgentOS.Git.MountBridge do
   @error_usage Git.error_usage()
   @error_worktree Git.error_worktree()
   @error_repository Git.error_repository()
+  @error_code_invalid Git.error_code_invalid()
+  @error_code_missing Git.error_code_missing()
+  @error_code_exists Git.error_code_exists()
+  @error_code_not_directory Git.error_code_not_directory()
+  @error_code_is_directory Git.error_code_is_directory()
+  @error_code_not_empty Git.error_code_not_empty()
+  @error_code_denied Git.error_code_denied()
 
   @spec call(pid(), binary()) :: {:ok, binary()} | {:error, term()}
   def call(pid, body) when is_pid(pid) and is_binary(body) do
@@ -76,7 +83,7 @@ defmodule AgentOS.Git.MountBridge do
        when status != @status_ok do
     errno =
       case Git.decode_engine_error(payload) do
-        {:ok, error} -> errno(error.domain)
+        {:ok, error} -> errno(error.domain, error.code)
         _ -> Constants.eio()
       end
 
@@ -86,21 +93,21 @@ defmodule AgentOS.Git.MountBridge do
   defp encode_kernel_response(op, %{status: @status_ok, payload: payload})
        when op == @mount_op_open do
     with {:ok, %{data: data}} <- Git.decode_file_result(payload) do
-      {:ok, <<0::little-signed-32, (data || <<>>)::binary>>}
+      {:ok, <<0::little-signed-32, data || <<>>::binary>>}
     end
   end
 
   defp encode_kernel_response(op, %{status: @status_ok, payload: payload})
        when op == @mount_op_stat do
     with {:ok, file} <- Git.decode_file_result(payload) do
-      {:ok, <<0::little-signed-32, (stat_record(file))::binary>>}
+      {:ok, <<0::little-signed-32, stat_record(file)::binary>>}
     end
   end
 
   defp encode_kernel_response(op, %{status: @status_ok, payload: payload})
        when op == @mount_op_readdir do
     with {:ok, %{entries: entries}} <- Git.decode_directory_result(payload) do
-      {:ok, <<0::little-signed-32, (directory_entries(entries))::binary>>}
+      {:ok, <<0::little-signed-32, directory_entries(entries)::binary>>}
     end
   end
 
@@ -109,7 +116,11 @@ defmodule AgentOS.Git.MountBridge do
 
   defp stat_record(file) do
     size = join_u64(file.size_low, file.size_high)
-    node_type = if directory_mode?(file.mode), do: Constants.stat_node_dir(), else: Constants.stat_node_file()
+
+    node_type =
+      if directory_mode?(file.mode),
+        do: Constants.stat_node_dir(),
+        else: Constants.stat_node_file()
 
     <<size::little-unsigned-64, node_type::little-unsigned-32, 1::little-unsigned-32,
       file.mode::little-unsigned-32, 0::little-signed-64, 0::little-signed-64,
@@ -119,7 +130,11 @@ defmodule AgentOS.Git.MountBridge do
   defp directory_entries(entries) do
     entries
     |> Enum.map(fn entry ->
-      kind = if directory_mode?(entry.mode), do: Constants.serve_dirent_dir(), else: Constants.serve_dirent_file()
+      kind =
+        if directory_mode?(entry.mode),
+          do: Constants.serve_dirent_dir(),
+          else: Constants.serve_dirent_file()
+
       name = entry.name
       <<kind::little-unsigned-32, byte_size(name)::little-unsigned-32, name::binary>>
     end)
@@ -134,9 +149,15 @@ defmodule AgentOS.Git.MountBridge do
   defp optional_path(""), do: nil
   defp optional_path(path), do: path
 
-  defp errno(@error_path), do: Constants.enoent()
-  defp errno(@error_usage), do: Constants.eperm()
-  defp errno(@error_worktree), do: Constants.eio()
-  defp errno(@error_repository), do: Constants.eio()
-  defp errno(_), do: Constants.eio()
+  defp errno(@error_path, @error_code_invalid), do: Constants.einval()
+  defp errno(@error_path, @error_code_missing), do: Constants.enoent()
+  defp errno(@error_path, @error_code_exists), do: Constants.eexist()
+  defp errno(@error_path, @error_code_not_directory), do: Constants.enotdir()
+  defp errno(@error_path, @error_code_is_directory), do: Constants.eisdir()
+  defp errno(@error_path, @error_code_not_empty), do: Constants.enotempty()
+  defp errno(@error_path, @error_code_denied), do: Constants.eacces()
+  defp errno(@error_usage, _), do: Constants.eperm()
+  defp errno(@error_worktree, _), do: Constants.eio()
+  defp errno(@error_repository, _), do: Constants.eio()
+  defp errno(_, _), do: Constants.eio()
 end

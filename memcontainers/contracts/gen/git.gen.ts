@@ -115,6 +115,15 @@ export const ERROR_PERSISTENCE = 12 as const;
 export const ERROR_LIMIT = 13 as const;
 export const ERROR_CANCELLED = 14 as const;
 export const ERROR_INTERNAL = 15 as const;
+export const ERROR_CODE_INVALID = 1 as const;
+export const ERROR_CODE_MISSING = 2 as const;
+export const ERROR_CODE_EXISTS = 3 as const;
+export const ERROR_CODE_NOT_DIRECTORY = 4 as const;
+export const ERROR_CODE_IS_DIRECTORY = 5 as const;
+export const ERROR_CODE_NOT_EMPTY = 6 as const;
+export const ERROR_CODE_DENIED = 7 as const;
+export const ERROR_CODE_STALE = 8 as const;
+export const ERROR_CODE_CONFLICT = 9 as const;
 
 
 const CTL_TEXT_ENCODER = new TextEncoder();

@@ -20,6 +20,10 @@ filegroup(
 zig_library(
     name = "core",
     main = "src/core.zig",
+    srcs = [
+        "src/errors.zig",
+        "src/paths.zig",
+    ],
     deps = [
         "@gitz//src/plumbing/object",
         "@gitz//src/plumbing",
@@ -72,6 +76,12 @@ zig_test(
         "@gitz//src/plumbing/object",
         "//memcontainers/contracts:git_zig",
     ],
+)
+
+zig_test(
+    name = "native_backend_test",
+    main = "test/native_backend_test.zig",
+    deps = [":native_backend"],
 )
 
 zig_binary(
@@ -129,10 +139,17 @@ zig_binary(
     ],
 )
 
+zig_configure_binary(
+    name = "git_engine_native_release",
+    actual = ":git-engine",
+    mode = "release_safe",
+    threaded = "single",
+)
+
 filegroup(
     name = "git_engine_server_artifacts",
     srcs = [
-        ":git-engine",
+        ":git_engine_native_release",
     ],
 )
 
@@ -140,6 +157,12 @@ pkg_tar(
     name = "git_engine_release",
     files = {
         ":git_engine.wasm": "git_engine.wasm",
+        "@gitz//:LICENSE": "share/licenses/gitz/LICENSE",
+    },
+    modes = {
+        "share": "0755",
+        "share/licenses": "0755",
+        "share/licenses/gitz": "0755",
     },
     owner = "0.0",
 )
@@ -151,7 +174,10 @@ build_test(
 
 build_test(
     name = "git_engine_native_build_test",
-    targets = [":git-engine"],
+    targets = [
+        ":git-engine",
+        ":git_engine_native_release",
+    ],
 )
 
 size_limit(
@@ -190,14 +216,26 @@ js_test(
     env = {"AGENTOS_GIT_ENGINE": "$(rlocationpath :git-engine)"},
 )
 
+js_test(
+    name = "port_release_runtime_test",
+    data = [
+        ":git_engine_native_release",
+        "test/port/runtime_test.mjs",
+    ],
+    entry_point = "test/port/runtime_test.mjs",
+    env = {"AGENTOS_GIT_ENGINE": "$(rlocationpath :git_engine_native_release)"},
+)
+
 test_suite(
     name = "all",
     tests = [
         ":core_test",
         ":git_engine_native_build_test",
+        ":native_backend_test",
         ":git_engine_wasm_build_test",
         ":git_engine_wasm_size_limit",
         ":port_runtime_test",
+        ":port_release_runtime_test",
         ":wasm_debug_runtime_test",
         ":wasm_runtime_test",
     ],

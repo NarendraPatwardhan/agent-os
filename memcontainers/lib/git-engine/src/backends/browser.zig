@@ -154,6 +154,10 @@ pub const Browser = struct {
         session.store.reference_storage.commitPrepared(&prepared);
     }
 
+    pub fn remoteApplyBegin(_: *Browser, _: std.mem.Allocator, _: *Session, _: u8, _: []const u8, _: []const u8, _: []const u8, _: []const u8, _: plumbing.Hash) !void {}
+    pub fn remoteApplyFinish(_: *Browser, _: *Session) !void {}
+    pub fn hasPendingRemoteApply(_: *Browser, _: *const Session) bool { return false; }
+
     /// Stage an exact commit gitlink without touching the nested worktree.
     pub fn stageGitlink(_: *Browser, session: *Session, path: []const u8, hash: plumbing.Hash) !void {
         const index = try session.store.index();

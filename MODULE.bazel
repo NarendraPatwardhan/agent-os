@@ -48,9 +48,9 @@ register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 bazel_dep(name = "gitz", version = "0.0.0")
 archive_override(
     module_name = "gitz",
-    integrity = "sha256-+HUfU1PBLf4jWvnFGkU+FPaMjT49KwCcPBh215rBLIk=",
-    strip_prefix = "gitz-24f9a126217b46d6883db28eb881e67b22d379fc",
-    url = "https://github.com/OpytAI/gitz/archive/24f9a126217b46d6883db28eb881e67b22d379fc.tar.gz",
+    integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    strip_prefix = "gitz-fdf9124c2aab83b6c3297be4bae8045ada7661f8",
+    url = "https://github.com/OpytAI/gitz/archive/fdf9124c2aab83b6c3297be4bae8045ada7661f8.tar.gz",
 )
 
 # ---------------------------------------------------------------------------

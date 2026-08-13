@@ -489,8 +489,28 @@ defmodule AgentOS.Git.Public do
   defp required_config_key(_), do: raise(ArgumentError, "unsupported Git config key")
 
   defp public_response(_opcode, %{status: @status_error, payload: payload}, _request) do
-    message = case Git.decode_engine_error(payload) do {:ok, %{message: msg}} when is_binary(msg) -> msg; _ -> "git operation failed" end
-    Json.encode(%{"ok" => false, "code" => 1, "stdout" => "", "stderr" => message <> "\n"})
+    error =
+      case Git.decode_engine_error(payload) do
+        {:ok, value} ->
+          %{
+            "domain" => value.domain,
+            "code" => value.code,
+            "operation" => value.operation,
+            "retry" => value.retry,
+            "message" => value.message || "git operation failed"
+          }
+
+        _ ->
+          %{"domain" => 0, "code" => 0, "operation" => 0, "retry" => 0, "message" => "git operation failed"}
+      end
+
+    Json.encode(%{
+      "ok" => false,
+      "code" => 1,
+      "stdout" => "",
+      "stderr" => error["message"] <> "\n",
+      "error" => error
+    })
   end
   defp public_response(opcode, %{payload: payload}, request) do
     {stdout, result} = decode_success(opcode, payload)

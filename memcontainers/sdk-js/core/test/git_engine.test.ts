@@ -11,6 +11,11 @@ await mount.write!("nested/hello.txt", new TextEncoder().encode("hello from sdk\
 assert.equal(new TextDecoder().decode(await mount.open("nested/hello.txt")), "hello from sdk\n");
 assert.equal((await mount.stat("nested/hello.txt")).kind, "file");
 assert.deepEqual(await mount.readdir("nested"), [{ name: "hello.txt", kind: "file" }]);
+await assert.rejects(
+  () => mount.open("nested/missing.txt"),
+  (error: unknown) => (error as { code?: string }).code === "ENOENT",
+  "generated path errors must survive the Wasm and mount adapters",
+);
 
 assert.equal((await engine.run({ op: "status" })).ok, true);
 assert.equal((await engine.run({ op: "add", args: { paths: ["nested/hello.txt"] } })).ok, true);
