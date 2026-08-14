@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "profile_id": "agent-os-command-v1",
+  "bindings": [
+    { "role": "program_pointer", "name": "luauc_runtime_v1_program_pointer", "retain": false },
+    { "role": "generated_data_arena", "name": "luauc_runtime_v1_program_arena", "retain": false },
+    { "role": "generated_data_capacity", "name": "luauc_runtime_v1_program_arena_capacity", "retain": false },
+    { "role": "memory", "name": "memory", "retain": true },
+    { "role": "stack_pointer", "name": "__stack_pointer", "retain": true },
+    { "role": "protected_dispatch", "name": "__mc_pcall_run", "retain": true },
+    { "role": "alloc", "name": "agent_os_luauc_v1_alloc", "retain": true },
+    { "role": "dealloc", "name": "agent_os_luauc_v1_dealloc", "retain": true },
+    { "role": "context_create", "name": "agent_os_luauc_v1_context_create", "retain": true },
+    { "role": "context_destroy", "name": "agent_os_luauc_v1_context_destroy", "retain": true },
+    { "role": "invoke", "name": "agent_os_luauc_v1_invoke", "retain": true },
+    { "role": "initialize", "name": "_start", "retain": true }
+  ],
+  "retained_exports": []
+}

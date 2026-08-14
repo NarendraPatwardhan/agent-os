@@ -20,6 +20,7 @@
 mod harness;
 pub use harness::*;
 
+mod agent_plan;
 mod boot;
 mod coreutils;
 mod flavors;

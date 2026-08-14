@@ -116,6 +116,13 @@ pub fn boot_loom() -> Session {
     Session { host, stdout }
 }
 
+/// Boot loom with the source-built `/bin/agent-plan` luauc product and its exact interpreter sources.
+pub fn boot_loom_agent_plan() -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom_agent_plan.tar");
+    let host = b.build().expect("kernel booted (loom agent-plan image)");
+    Session { host, stdout }
+}
+
 /// Boot the `loom` image with a host-call tool registry installed. This is the Luau `require("tools")`
 /// proof: the language battery talks to the base `/svc/tools` broker, which then egresses through the
 /// opted-in host-call map.

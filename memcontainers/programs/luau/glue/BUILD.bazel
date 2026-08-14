@@ -1,6 +1,6 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@luauc//bazel:cc.bzl", "zig_cxx_object")
-load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library", "zig_static_library")
 load("//bazel:mc_program.bzl", "cc_headers", "cc_object", "mc_program")
 
 exports_files(
@@ -64,12 +64,42 @@ build_test(
     targets = [":glue"],
 )
 
+# Strict static packages reuse the production AgentOS syscall and JSON bindings, but do not carry
+# the interpreter's source loader or embedded Luau batteries. Luauc owns the VM/runtime semantics;
+# this downstream archive owns only the host capabilities made available to compiled programs.
+zig_static_library(
+    name = "aot_host",
+    srcs = [
+        "fs.zig",
+        "json.zig",
+        "lua.zig",
+        "sys.zig",
+        "trap.zig",
+        "wasi_shim.zig",
+    ],
+    extra_srcs = ["@luauc//luau:interpreter_header_files"],
+    main = "aot_host.zig",
+    visibility = ["//memcontainers/programs/luau/aot:__pkg__"],
+    zigopts = ["-lc"],
+    deps = [
+        "//memcontainers/contracts:constants_zig",
+        "//memcontainers/sysroot/zig:mc",
+        "@luauc//luau:interpreter_headers",
+    ],
+)
+
+build_test(
+    name = "aot_host_build_test",
+    targets = [":aot_host"],
+)
+
 # The wasi→mc adapter as a SELF-CONTAINED staticlib, link-injected into luau (see :luau_raw deps).
 # luau is not a Rust crate, so it links the staticlib (which bundles the core funcs + panic_handler)
 # rather than the bare object the rust mc_box uses.
 cc_object(
     name = "wasi_adapter_link",
     obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib",
+    visibility = ["//memcontainers/programs/luau/aot:__pkg__"],
 )
 
 # Puts this directory's consumer-owned headers on the build's include path. Luauc owns and exposes

@@ -1,0 +1,92 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@luauc//bazel:defs.bzl", "luauc_package")
+load("@luauc//profiles:defs.bzl", "luauc_runtime_profile")
+load("@luauc//runtime:runtime_symbols.bzl", "AOT_GENERATED_RUNTIME_SYMBOLS")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("//bazel:mc_program.bzl", "mc_program")
+
+exports_files(
+    [
+        "sources/main.luau",
+        "sources/planner.luau",
+        "sources/step.luau",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+_PACK_EXPORTS = [
+    "__mc_pcall_run",
+    "__stack_pointer",
+    "agent_os_luauc_v1_alloc",
+    "agent_os_luauc_v1_context_create",
+    "agent_os_luauc_v1_context_destroy",
+    "agent_os_luauc_v1_dealloc",
+    "agent_os_luauc_v1_invoke",
+    "luauc_runtime_v1_program_arena",
+    "luauc_runtime_v1_program_arena_capacity",
+    "luauc_runtime_v1_program_pointer",
+] + AOT_GENERATED_RUNTIME_SYMBOLS
+
+# The raw pack combines luauc's generated-code runtime with real AgentOS host capabilities and a
+# real context/invoke API. It contains no package code; luauc_package links the selected package
+# into the bounded generated-data arena after validating this provider profile.
+zig_binary(
+    name = "agent_os_runtime_pack_raw",
+    csrcs = ["program_placeholder.c"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+    ] + ["--export=" + symbol for symbol in _PACK_EXPORTS],
+    main = "provider_entry.zig",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/programs/luau/glue:aot_host",
+        "//memcontainers/programs/luau/glue:wasi_adapter_link",
+        "//memcontainers/sysroot/zig:mc",
+        "@luauc//runtime:runtime_abi",
+        "@luauc//runtime:runtime_archive_raw",
+    ],
+)
+
+zig_configure_binary(
+    name = "agent_os_runtime_wasm",
+    actual = ":agent_os_runtime_pack_raw",
+    mode = "release_small",
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+luauc_runtime_profile(
+    name = "agent_os_runtime",
+    policy = "runtime_profile.json",
+    raw_pack = ":agent_os_runtime_wasm",
+)
+
+luauc_package(
+    name = "agent_plan_wasm",
+    entry = "agent_plan_main",
+    modules = {
+        "agent_plan_main": "sources/main.luau",
+        "agent_plan_planner": "sources/planner.luau",
+        "agent_plan_step": "sources/step.luau",
+    },
+    out = "agent-plan.unstamped.wasm",
+    runtime_pack = ":agent_os_runtime_pack",
+    runtime_profile = ":agent_os_runtime_profile",
+    tags = ["manual"],
+)
+
+build_test(
+    name = "agent_plan_build_test",
+    targets = [":agent_plan_wasm"],
+)
+
+mc_program(
+    name = "agent-plan",
+    fuel = 10000000000,
+    mem = 64 * 1024 * 1024,
+    table = 10000,
+    tier = "full",
+    visibility = ["//memcontainers/images:__pkg__"],
+    wasm = ":agent_plan_wasm",
+)

@@ -194,6 +194,23 @@ pkg_tar(
     ],
 )
 
+# The first downstream luauc product image: ordinary loom plus one useful, source-built workflow
+# planner and the exact source package used for interpreter differential checks. Compiler/runtime
+# construction stays in @luauc; this layer owns only AgentOS installation and product composition.
+pkg_tar(
+    name = "loom_agent_plan",
+    create_parents = False,
+    files = {
+        "//memcontainers/programs/luau/aot:agent-plan": "/bin/agent-plan",
+        "//memcontainers/programs/luau/aot:sources/main.luau": "/lib/luau/agent_plan_main.luau",
+        "//memcontainers/programs/luau/aot:sources/planner.luau": "/lib/luau/agent_plan_planner.luau",
+        "//memcontainers/programs/luau/aot:sources/step.luau": "/lib/luau/agent_plan_step.luau",
+    },
+    owner = "0.0",
+    visibility = ["//memcontainers/tests/e2e:__pkg__"],
+    deps = [":loom"],
+)
+
 # svc-test — the resident-service primitive proof image (SYSTEMS.md): loom (the shell + /bin/luau)
 # + the svc example/test services /bin/kv (the warm key-value demo) and /bin/crashloop (a deliberately-
 # broken negative control), plus GENERATED /etc/services.d fragments. On LOOM (not base) so the e2e proves

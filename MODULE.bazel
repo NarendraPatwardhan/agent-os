@@ -58,9 +58,9 @@ archive_override(
 bazel_dep(name = "luauc", version = "0.0.0")
 archive_override(
     module_name = "luauc",
-    integrity = "sha256-0GvuO183oADQ1AbygvwMyWV4sQc9Gtvd14D9j5ao0No=",
-    strip_prefix = "luauc-5a99b3ddd3344dd2108bc95e2ad5f6e51327d86e",
-    url = "https://github.com/OpytAI/luauc/archive/5a99b3ddd3344dd2108bc95e2ad5f6e51327d86e.tar.gz",
+    integrity = "sha256-So4Rk+jLU8DXlrKWEwcs/3oTsGOMsMM3jkeKzkQ5ozU=",
+    strip_prefix = "luauc-7bb2b5c8a25d3fd189bfba04f7ae832cbece8836",
+    url = "https://github.com/OpytAI/luauc/archive/7bb2b5c8a25d3fd189bfba04f7ae832cbece8836.tar.gz",
 )
 
 # ---------------------------------------------------------------------------
