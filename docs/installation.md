@@ -78,13 +78,13 @@ const vm = await mc.create({
 
 ## Runtime artifacts
 
-| Artifact                | Required when                                                   |
-| ----------------------- | --------------------------------------------------------------- |
-| `kernel.wasm`           | Running `local` or `browser` without an environment default     |
-| Flavor tar              | Booting an embedded VM from raw bytes                           |
-| `catalog-compiler.wasm` | Compiling connection catalogs or adding host tools in a browser |
+| Artifact                | Required when                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| `kernel.wasm`           | Running `local` or `browser` without an environment default                                 |
+| Flavor tar              | Booting an embedded VM from raw bytes                                                       |
+| `catalog-compiler.wasm` | Compiling connection catalogs or adding host tools in a browser                             |
 | `git-engine.tar`        | Host git (`mc.create({ git: true })`); installer also extracts `git-engine/` for inspection |
-| `mc-core.mjs`           | Using the standalone release SDK                                |
+| `mc-core.mjs`           | Using the standalone release SDK                                                            |
 
 The catalog compiler is not guest code and is not part of an image. It is pure host-side WebAssembly
 used to project API descriptions and tool definitions into the guest catalog.
@@ -93,7 +93,7 @@ used to project API descriptions and tool definitions into the guest catalog.
 
 Product form is **`git-engine.tar`** bytes (not a public directory URL). After install,
 `source agent-os/env.sh` (or set `AGENTOS_DIR` / `MC_GIT_ENGINE_TAR`) and pass `git: true` or a
-config object. Resolve order and cache details: [Git](./git.md#host-git-engine-tar-resolve-js).
+config object. Resolve order and cache details: [Git](./git.md#artifact-resolution).
 
 ```js
 import { defaultImage, defaultKernel, mc } from "@mc/core";
@@ -145,19 +145,19 @@ registry.
 
 ## Environment variables
 
-| Variable                   | Consumer              | Meaning                                         |
-| -------------------------- | --------------------- | ----------------------------------------------- |
-| `MC_KERNEL_WASM`           | `defaultKernel()`     | Local path to `kernel.wasm`                     |
-| `MC_BASE_IMAGE`            | `defaultImage()`      | Local path to the default image tar             |
-| `MC_CATALOG_COMPILER_WASM` | Catalog compilation   | Local path to `catalog-compiler.wasm`           |
-| `MC_GIT_ENGINE_TAR`        | Host git / LLB        | Local path to `git-engine.tar`                  |
+| Variable                   | Consumer              | Meaning                                                        |
+| -------------------------- | --------------------- | -------------------------------------------------------------- |
+| `MC_KERNEL_WASM`           | `defaultKernel()`     | Local path to `kernel.wasm`                                    |
+| `MC_BASE_IMAGE`            | `defaultImage()`      | Local path to the default image tar                            |
+| `MC_CATALOG_COMPILER_WASM` | Catalog compilation   | Local path to `catalog-compiler.wasm`                          |
+| `MC_GIT_ENGINE_TAR`        | Host git / LLB        | Local path to `git-engine.tar`                                 |
 | `AGENTOS_DIR`              | Artifact resolve      | Install root (`kernel.wasm`, `git-engine.tar`, flavor tars, …) |
-| `MC_ARTIFACT_HOME`         | Artifact resolve      | Alias for install root (same role as `AGENTOS_DIR`) |
-| `MC_ARTIFACT_CACHE`        | Artifact resolve      | Host cache root (blobs + materialized engine dirs) |
-| `MC_ARTIFACT_FETCH`        | Artifact resolve      | `=1` / `true`: allow network fetch on cache miss |
-| `MC_ARTIFACT_VERSION`      | Artifact resolve      | Cache / fetch version key (default `local`)     |
-| `MC_STORE`                 | `defaultStore()`      | Root directory for the filesystem content store |
-| `MC_BUILD_CACHE`           | Node/Bun LLB platform | Root for persistent build cache mounts          |
+| `MC_ARTIFACT_HOME`         | Artifact resolve      | Alias for install root (same role as `AGENTOS_DIR`)            |
+| `MC_ARTIFACT_CACHE`        | Artifact resolve      | Host cache root (blobs + materialized engine dirs)             |
+| `MC_ARTIFACT_FETCH`        | Artifact resolve      | `=1` / `true`: allow network fetch on cache miss               |
+| `MC_ARTIFACT_VERSION`      | Artifact resolve      | Cache / fetch version key (default `local`)                    |
+| `MC_STORE`                 | `defaultStore()`      | Root directory for the filesystem content store                |
+| `MC_BUILD_CACHE`           | Node/Bun LLB platform | Root for persistent build cache mounts                         |
 
 Explicit options take precedence over environment-backed defaults. After `install.sh`, prefer
 `source agent-os/env.sh` rather than setting each path by hand.

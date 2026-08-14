@@ -29,7 +29,7 @@ gh_release(
         "//memcontainers/sdk-js/core:bundle": "mc-core.mjs",
         "//memcontainers/programs/browser:browser_ctl_layer": "browser-ctl.tar",
         "//memcontainers/lib/catalog-compiler:wasm": "catalog-compiler.wasm",
-        "//memcontainers/lib/git-engine:git_engine_release": "git-engine.tar",
+        "//memcontainers/lib/git-engine:git_engine_browser_archive": "git-engine.tar",
     },
     repo = "NarendraPatwardhan/agent-os",
     visibility = ["//visibility:public"],

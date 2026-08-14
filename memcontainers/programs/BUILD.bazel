@@ -1,8 +1,0 @@
-# programs — the guest /bin. Tools are Bazel-built wasm guests stamped with
-# mc_tier / mc_budget / mc_service or multicall metadata as appropriate.
-#
-# Tools-as-libraries: ONE binary per tool, two activation modes (one-shot CLI vs
-# resident service), chosen by the kernel via the contract — never a `/bin/<tool>-svc`.
-#
-# The guest-userland language is per subsystem: core shell and coreutils are Zig,
-# while Rust/C/C++ engines remain where they are the right fit.

@@ -1856,7 +1856,7 @@
           "@@//memcontainers/hosts/wasmtime/Cargo.lock": "9b8d604211c4617352f2643fa6c6abe58624fda4f8b73430f8e203203acebf07",
           "@@//memcontainers/hosts/wasmtime/Cargo.toml": "58d403a4d7b1f1b9a883010d3e24d327502e096a383a5d7968097de26c30e463",
           "@@//memcontainers/hosts/wasmtime/nif/Cargo.lock": "7389b879cef25db6d83a33d7cd1d5ec050e2c71ddbbb7b0d749fa307cec2b207",
-          "@@//memcontainers/hosts/wasmtime/nif/Cargo.toml": "4c943bef0901e62e501b4c5758197ee723e4f6426d54c110207693c043b6a6de",
+          "@@//memcontainers/hosts/wasmtime/nif/Cargo.toml": "1c360f00ec5e325719d34705333c2e111525b1da68da38a60647ad772be1e6ec",
           "@@//memcontainers/kernel/rust/Cargo.lock": "880d05954ea2bbec60ffd996d7eadbf77a900defcedcb954d3b9cce0e1838638",
           "@@//memcontainers/kernel/rust/Cargo.toml": "611db36c025ff87f9805202f3d454a05ef6ab017d0e577bdf56cbdc872516333",
           "@@//memcontainers/lib/parse/Cargo.lock": "323b0d25bf1c83af12e671fe1a6657dc6768a95681dd6b39726f04152866ddb2",

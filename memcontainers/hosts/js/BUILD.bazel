@@ -12,7 +12,7 @@ npm_link_all_packages(name = "node_modules")
 # generated @mc/contracts descriptors, so the boundary the kernel/Rust host derive from is the one the
 # JS host derives from too — it can't silently desync (B2).
 mc_ts_project(
-    name = "host",
+    name = "lib",
     srcs = glob(["src/**/*.ts"]),
     visibility = ["//visibility:public"],
     deps = [
@@ -28,7 +28,7 @@ npm_package(
     name = "pkg",
     srcs = [
         "package.json",
-        ":host",
+        ":lib",
     ],
     package = "@mc/host",
     visibility = ["//visibility:public"],
@@ -41,7 +41,7 @@ mc_ts_project(
     name = "parity_lib",
     srcs = ["test/parity.test.ts"],
     deps = [
-        ":host",
+        ":lib",
         "//:node_modules/@types/bun",
     ],
 )
@@ -68,7 +68,7 @@ mc_ts_project(
     name = "persist_lib",
     srcs = ["test/persist.test.ts"],
     deps = [
-        ":host",
+        ":lib",
         ":node_modules/@mc/contracts",
         "//:node_modules/@types/bun",
     ],
@@ -87,7 +87,7 @@ mc_ts_project(
     name = "snapshot_test_lib",
     srcs = ["test/snapshot.test.ts"],
     deps = [
-        ":host",
+        ":lib",
         "//:node_modules/@types/bun",
     ],
 )
@@ -116,7 +116,7 @@ mc_ts_project(
     name = "cross_host_lib",
     srcs = ["test/cross_host.test.ts"],
     deps = [
-        ":host",
+        ":lib",
         "//:node_modules/@types/bun",
     ],
 )

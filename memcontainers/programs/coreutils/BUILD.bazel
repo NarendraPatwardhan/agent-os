@@ -1,4 +1,4 @@
-load("//bazel:coreutils.bzl", "coreutils_box")
+load(":defs.bzl", "coreutils_box")
 
 # programs/coreutils — Zig nutils-derived multicall boxes, pure mc from source. The target names stay
 # compatible with the former Rust lane so images and mc-roster consumers can flip without label churn.

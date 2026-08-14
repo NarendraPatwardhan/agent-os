@@ -1,6 +1,6 @@
 # Manifest for crate_universe (rustler) resolution ONLY — the NIF BUILDS via Bazel
 # (rust_shared_library), not cargo. The `host` crate it wraps is provided by Bazel as
-# //memcontainers/hosts/wasmtime:host (an in-repo rust_library), NOT declared here, so the
+# //memcontainers/hosts/wasmtime:lib (an in-repo rust_library), NOT declared here, so the
 # @nif_crates universe stays minimal (just rustler + its transitive deps). Kept apart from the
 # kernel / host / guest / typst universes for the same reason those are split (no feature
 # unification across unrelated graphs).

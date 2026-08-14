@@ -34,7 +34,7 @@ import {
   ensureTemplate,
   templateClassKey,
   layerContentDigests,
-} from "./template_cache.js";
+} from "./template-cache.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
 import { mergeToolCatalogBundles, toolCatalogBundle } from "./tools.js";
@@ -364,11 +364,7 @@ function attachLoadedGitEngines(backend: EmbeddedBackend, engines: LoadedGitEngi
  */
 async function mountDefaultGitFs(backend: Backend, engines: LoadedGitEngine[]): Promise<void> {
   for (const eng of engines) {
-    await backend.mount(
-      eng.path,
-      eng.asMountDriver(),
-      !!eng.readOnly,
-    );
+    await backend.mount(eng.path, eng.asMountDriver(), !!eng.readOnly);
   }
 }
 

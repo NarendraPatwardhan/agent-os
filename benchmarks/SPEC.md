@@ -152,7 +152,7 @@ counts, command, and artifact SHA-256 digests and sizes.
 
 A valid result:
 
-- conforms to `schema/result.schema.json`;
+- conforms to `results/schema.json`;
 - contains raw samples for every summary;
 - contains no negative values;
 - retains failed observations;

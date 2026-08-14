@@ -2,7 +2,6 @@ load("@aspect_bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-load("//server:package_manifest.bzl", "package_manifest")
 
 # server — the AgentOS control-plane library (Elixir/OTP): the supervisor over wasm VMs
 # described in SYSTEMS.md §13.1. It drives VMs through host_nif and deliberately stops below
@@ -18,6 +17,7 @@ load("//server:package_manifest.bzl", "package_manifest")
 # loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so, mix never
 # compiles it.
 load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY", "canonical_host_file", "elixir_file", "elixir_test")
+load("//server:package_manifest.bzl", "package_manifest")
 
 _SERVER_SRCS = glob(["lib/**/*.ex"])
 
@@ -121,11 +121,11 @@ elixir_test(
 mix_test(
     name = "kvm_test_impl",
     srcs = [
-        "test/agent_os/firecracker_test.exs",
+        "test/agent_os/sidecars/firecracker/provider_test.exs",
         "test/test_helper.exs",
     ],
     data = [
-        "//server/sidecars/runner:health_initramfs",
+        "//server/sidecars/firecracker/health:initramfs",
         "@firecracker",
         "@firecracker//:jailer",
         "@firecracker_kernel//file",
@@ -158,11 +158,11 @@ elixir_test(
 mix_test(
     name = "browser_kvm_test_impl",
     srcs = [
-        "test/agent_os/browser_firecracker_test.exs",
+        "test/agent_os/sidecars/firecracker/browser_test.exs",
         "test/test_helper.exs",
     ],
     data = [
-        "//server/sidecars/browser:initramfs",
+        "//server/sidecars/firecracker/browser:initramfs",
         "@firecracker",
         "@firecracker//:jailer",
         "@firecracker_kernel//file",
@@ -274,14 +274,45 @@ pkg_tar(
 # The runtime payload makes the package complete for a host app that consumes agent_os outside
 # Bazel: the Elixir library, NIF, kernel, and supported flavor images are one artifact. These
 # are the real graph outputs, not copied source-tree byproducts.
-canonical_host_file(name = "package_atlas", actual = "//memcontainers/images:atlas")
-canonical_host_file(name = "package_loom", actual = "//memcontainers/images:loom")
-canonical_host_file(name = "package_minimal", actual = "//memcontainers/images:minimal")
-canonical_host_file(name = "package_paper", actual = "//memcontainers/images:paper")
-canonical_host_file(name = "package_posix", actual = "//memcontainers/images:posix")
-canonical_host_file(name = "package_browser_ctl", actual = ":browser_ctl_artifact")
-canonical_host_file(name = "package_kernel", actual = "//memcontainers/kernel/rust:kernel")
-canonical_host_file(name = "package_git_engine", actual = "//memcontainers/lib/git-engine:git_engine_native_release")
+canonical_host_file(
+    name = "package_atlas",
+    actual = "//memcontainers/images:atlas",
+)
+
+canonical_host_file(
+    name = "package_loom",
+    actual = "//memcontainers/images:loom",
+)
+
+canonical_host_file(
+    name = "package_minimal",
+    actual = "//memcontainers/images:minimal",
+)
+
+canonical_host_file(
+    name = "package_paper",
+    actual = "//memcontainers/images:paper",
+)
+
+canonical_host_file(
+    name = "package_posix",
+    actual = "//memcontainers/images:posix",
+)
+
+canonical_host_file(
+    name = "package_browser_ctl",
+    actual = ":browser_ctl_artifact",
+)
+
+canonical_host_file(
+    name = "package_kernel",
+    actual = "//memcontainers/kernel/rust:kernel",
+)
+
+canonical_host_file(
+    name = "package_git_engine",
+    actual = "//memcontainers/lib/git-engine:git_engine_native_release",
+)
 
 pkg_tar(
     name = "agent_os_package_runtime",
@@ -371,15 +402,15 @@ sh_binary(
 
 package_manifest(
     name = "agent_os_package_impl",
-    payload = ":agent_os_package_payload",
-    tool = ":package_manifest",
-    gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8",
-    gitz_integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    build_mode = "release_safe",
+    capabilities = 1,
     contract_major = 1,
     contract_minor = 0,
-    capabilities = 1,
-    build_mode = "release_safe",
+    gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8",
+    gitz_integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    payload = ":agent_os_package_payload",
     tags = ["manual"],
+    tool = ":package_manifest",
 )
 
 elixir_file(

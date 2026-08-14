@@ -80,7 +80,7 @@ sidecar_providers =
 
     initramfs =
       if browser? do
-        AgentOS.TestRunfiles.find!("server/sidecars/browser/initramfs.cpio")
+        AgentOS.TestRunfiles.find!("server/sidecars/firecracker/browser/initramfs.cpio")
       else
         AgentOS.TestRunfiles.find!("health-initramfs.cpio")
       end
@@ -99,7 +99,7 @@ sidecar_providers =
       end
 
     [
-      {AgentOS.Sidecars.Providers.Firecracker,
+      {AgentOS.Sidecars.Firecracker.Provider,
        launch: :direct,
        development: true,
        health_runner: not browser?,

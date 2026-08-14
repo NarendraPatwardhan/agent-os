@@ -62,12 +62,12 @@ available alternative for latency and the lowest-cost alternative for economics.
 
 ## Runners
 
-- `//benchmarks:wasmtime` measures the release native host. It is the authoritative lane for native
+- `//benchmarks:native` measures the release native host. It is the authoritative lane for native
   branching, density, and resilience.
-- `//benchmarks:js` measures the public embedded `@mc/core` API.
+- `//benchmarks:embedded` measures the public embedded `@mc/core` API.
 - `//benchmarks:browser` measures the browser API and launches fresh Chromium processes for browser
   startup and VM-memory populations.
-- `//benchmarks:beam` measures the AgentOS OTP control plane and release NIF.
+- `//benchmarks:server` measures the AgentOS OTP control plane and release NIF.
 
 ## Quick start
 
@@ -77,19 +77,19 @@ command:
 ```bash
 export BAZEL_CACHE=/path/to/agentos-bazel-cache
 
-bazel "--output_user_root=${BAZEL_CACHE}" test //benchmarks:tests
+bazel "--output_user_root=${BAZEL_CACHE}" test //benchmarks:test
 
-bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:wasmtime -- \
-  --profile smoke --output /tmp/agentos-wasmtime.json
+bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:native -- \
+  --profile smoke --output /tmp/agentos-native.json
 
-bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:js -- \
-  --profile smoke --output /tmp/agentos-js.json
+bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:embedded -- \
+  --profile smoke --output /tmp/agentos-embedded.json
 
 bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:browser -- \
   --profile smoke --output /tmp/agentos-browser.json
 
-bazel "--output_user_root=${BAZEL_CACHE}" test //benchmarks:beam
-# Result: bazel-testlogs/benchmarks/beam/test.outputs/beam.json
+bazel "--output_user_root=${BAZEL_CACHE}" test //benchmarks:server
+# Result: bazel-testlogs/benchmarks/server/test.outputs/server.json
 ```
 
 The BEAM target uses the same scoped Erlang/Elixir transition as `//server:mix_test`. Do not select a
@@ -103,8 +103,8 @@ Chromium defaults to `/usr/bin/chromium`; set `CHROMIUM_BIN` to use another exec
 ```bash
 bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:aggregate -- \
   --output /tmp/agentos-benchmark-run.json \
-  /tmp/agentos-wasmtime.json \
-  /tmp/agentos-js.json \
+  /tmp/agentos-native.json \
+  /tmp/agentos-embedded.json \
   /tmp/agentos-browser.json
 
 bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:validate -- \

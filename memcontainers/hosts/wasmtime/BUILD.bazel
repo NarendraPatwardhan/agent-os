@@ -18,7 +18,7 @@ load(":defs.bzl", "host_release_binary")
 # — defs.bzl explains why it's a real toolchain integration, not just a platform string.)
 
 rust_library(
-    name = "host",
+    name = "lib",
     srcs = glob(
         ["src/**/*.rs"],
         exclude = [
@@ -26,6 +26,7 @@ rust_library(
             "src/terminal.rs",  # raw-TTY handling, used only by the binary
         ],
     ),
+    crate_name = "host",
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -33,8 +34,8 @@ rust_library(
         "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
         "//memcontainers/contracts:snapshot_rust",  # MCSN v2 full/incremental framing + validation (B2/A3)
-        "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
         "//memcontainers/lib/catalog-compiler:lib",  # native server catalog compilation
+        "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
         "//memcontainers/toolcore:lib",  # the single-source connection-policy engine (no host-local copy)
         "@host_crates//:anyhow",
         "@host_crates//:rand",
@@ -59,7 +60,7 @@ rust_binary(
     crate_root = "src/main.rs",
     edition = "2021",
     deps = [
-        ":host",
+        ":lib",
         "@host_crates//:anyhow",
         "@host_crates//:clap",
         "@host_crates//:crossterm",
@@ -79,7 +80,7 @@ host_release_binary(
 build_test(
     name = "build_test",
     targets = [
-        ":host",
+        ":lib",
         ":mc_bin",
     ],
 )
@@ -92,7 +93,7 @@ rust_binary(
     srcs = ["test/snapshot_fixture.rs"],
     crate_root = "test/snapshot_fixture.rs",
     edition = "2021",
-    deps = [":host"],
+    deps = [":lib"],
 )
 
 rust_opt_test(
@@ -108,7 +109,7 @@ rust_opt_test(
     ],
     edition = "2021",
     deps = [
-        ":host",
+        ":lib",
         "@rules_rust//rust/runfiles",
     ],
 )
@@ -119,7 +120,7 @@ rust_opt_test(
     srcs = ["test/derive_origins.rs"],
     crate_root = "test/derive_origins.rs",
     edition = "2021",
-    deps = [":host"],
+    deps = [":lib"],
 )
 
 rust_opt_test(
@@ -133,7 +134,7 @@ rust_opt_test(
     ],
     edition = "2021",
     deps = [
-        ":host",
+        ":lib",
         "//memcontainers/contracts:snapshot_rust",
         "@host_crates//:serde",
         "@host_crates//:serde_json",

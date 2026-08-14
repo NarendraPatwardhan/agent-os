@@ -75,7 +75,7 @@ each call and return bytes.
 Host git uses the same resolve family for release `git-engine.tar` (`MC_GIT_ENGINE_TAR`,
 `AGENTOS_DIR`, cache, optional fetch). Product path is `mc.create({ git: true })` or
 `git: { engine: Uint8Array, … }`. Advanced direct load: `GitEngine.load({ engine? })`. See
-[Git](./git.md#host-git-engine-tar-resolve-js).
+[Git](./git.md#artifact-resolution).
 
 Helpers on the same path: `resolveArtifact`, `resolveKernel`, `resolveImageTar`,
 `resolveCatalogCompiler`, `resolveGitEngineTar`, `artifactCacheRoot`, and

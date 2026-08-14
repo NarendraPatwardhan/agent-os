@@ -25,13 +25,13 @@ mkdir -p "$(dirname "$manifest")"
 files="$stage/files.json"
 git_engine_digest="$(sha256sum "$stage/agent_os/priv/git-engine" | cut -d ' ' -f1)"
 kernel_digest="$(sha256sum "$stage/agent_os/priv/kernel/kernel.wasm" | cut -d ' ' -f1)"
-find "$stage/agent_os" -type f ! -path "$manifest" -print0 \
-  | sort -z \
-  | while IFS= read -r -d '' file; do
-      rel="${file#"$stage/agent_os/"}"
-      digest="$(sha256sum "$file" | cut -d ' ' -f1)"
-      printf '%s\t%s\n' "$rel" "$digest"
-    done > "$files"
+find "$stage/agent_os" -type f ! -path "$manifest" -print0 |
+  sort -z |
+  while IFS= read -r -d '' file; do
+    rel="${file#"$stage/agent_os/"}"
+    digest="$(sha256sum "$file" | cut -d ' ' -f1)"
+    printf '%s\t%s\n' "$rel" "$digest"
+  done >"$files"
 
 {
   printf '{\n  "schema": 1,\n  "agent_os_commit": "%s",\n' "$agent_os_commit"
@@ -45,9 +45,9 @@ find "$stage/agent_os" -type f ! -path "$manifest" -print0 \
     if [[ "$first" -eq 0 ]]; then printf ',\n'; fi
     first=0
     printf '    "%s": "%s"' "$path" "$digest"
-  done < "$files"
+  done <"$files"
   printf '\n  }\n}\n'
-} > "$manifest"
+} >"$manifest"
 rm "$files"
 
 tar --sort=name --mtime='UTC 2000-01-01' --owner=0 --group=0 --numeric-owner \

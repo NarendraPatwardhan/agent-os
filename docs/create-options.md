@@ -5,29 +5,29 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 
 ## Complete field dictionary
 
-| Field                | Values                                   | Default                         | Meaning                                              |
-| -------------------- | ---------------------------------------- | ------------------------------- | ---------------------------------------------------- |
-| `runtime`            | `"local"`, `"browser"`, `"remote"`       | `"local"`                       | Where the kernel is hosted                           |
-| `endpoint`           | URL string                               | none                            | Required for `remote`                                |
-| `id`                 | string                                   | server allocated                | Explicit remote create/restore destination           |
-| `token`              | string                                   | none                            | Bearer token sent to the remote endpoint             |
-| `image`              | bytes, name, digest, manifest, or `null` | `"base:latest"`                 | Initial filesystem/image contract                    |
-| `store`              | content-store object                     | `defaultStore()` where possible | Resolves images, layers, blobs, and snapshot objects |
-| `kernel`             | `Uint8Array`                             | `defaultKernel()` locally       | Embedded kernel bytes                                |
-| `net`                | boolean                                  | `false`                         | Installs host network capability                     |
-| `connections`        | connection records                       | `[]`                            | Host credentials and API catalog sources             |
-| `catalogCompiler`    | `Uint8Array`                             | environment-backed locally      | Catalog compiler WebAssembly                         |
-| `persist`            | boolean                                  | `false`                         | Enables `/var/persist` capability/backing            |
-| `permissions`        | permission object                        | capability defaults             | Guest filesystem and network policy                  |
-| `policies`           | policy rules                             | method classification           | Connection egress policy                             |
-| `onPermission`       | callback                                 | deny prompted operations        | Interactive network/tool approval                    |
-| `tools`              | tool definitions or selectors            | `[]`                            | Host handlers and connection tool groups             |
-| `restoreAttachments` | `"strict"`, `"detached"`                 | `"strict"`                      | Restore-time attachment validation                   |
-| `mounts`             | mount records                            | `[]`                            | Host-backed filesystems installed at boot            |
-| `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
-| `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
-| `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `git`                | `true` \| object (`GitCreateOptions`) | omit (off) | Host Gitz source plane. **Presence enables**. `true` resolves `git-engine.tar`; object configures mounts, identity, durability, policy, and optional artifact bytes. See [Git](./git.md) |
+| Field                | Values                                   | Default                         | Meaning                                                                                                                                                                                  |
+| -------------------- | ---------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime`            | `"local"`, `"browser"`, `"remote"`       | `"local"`                       | Where the kernel is hosted                                                                                                                                                               |
+| `endpoint`           | URL string                               | none                            | Required for `remote`                                                                                                                                                                    |
+| `id`                 | string                                   | server allocated                | Explicit remote create/restore destination                                                                                                                                               |
+| `token`              | string                                   | none                            | Bearer token sent to the remote endpoint                                                                                                                                                 |
+| `image`              | bytes, name, digest, manifest, or `null` | `"base:latest"`                 | Initial filesystem/image contract                                                                                                                                                        |
+| `store`              | content-store object                     | `defaultStore()` where possible | Resolves images, layers, blobs, and snapshot objects                                                                                                                                     |
+| `kernel`             | `Uint8Array`                             | `defaultKernel()` locally       | Embedded kernel bytes                                                                                                                                                                    |
+| `net`                | boolean                                  | `false`                         | Installs host network capability                                                                                                                                                         |
+| `connections`        | connection records                       | `[]`                            | Host credentials and API catalog sources                                                                                                                                                 |
+| `catalogCompiler`    | `Uint8Array`                             | environment-backed locally      | Catalog compiler WebAssembly                                                                                                                                                             |
+| `persist`            | boolean                                  | `false`                         | Enables `/var/persist` capability/backing                                                                                                                                                |
+| `permissions`        | permission object                        | capability defaults             | Guest filesystem and network policy                                                                                                                                                      |
+| `policies`           | policy rules                             | method classification           | Connection egress policy                                                                                                                                                                 |
+| `onPermission`       | callback                                 | deny prompted operations        | Interactive network/tool approval                                                                                                                                                        |
+| `tools`              | tool definitions or selectors            | `[]`                            | Host handlers and connection tool groups                                                                                                                                                 |
+| `restoreAttachments` | `"strict"`, `"detached"`                 | `"strict"`                      | Restore-time attachment validation                                                                                                                                                       |
+| `mounts`             | mount records                            | `[]`                            | Host-backed filesystems installed at boot                                                                                                                                                |
+| `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes                                                                                                                                           |
+| `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot                                                                                                                                                 |
+| `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source                                                                                                                                                 |
+| `git`                | `true` \| object (`GitCreateOptions`)    | omit (off)                      | Host Gitz source plane. **Presence enables**. `true` resolves `git-engine.tar`; object configures mounts, identity, durability, policy, and optional artifact bytes. See [Git](./git.md) |
 
 ## `runtime`
 
@@ -181,22 +181,22 @@ Host source-plane Git using the shared Gitz engine. JavaScript loads its zero-im
 the served runtime owns the native executable. **Opt-in by presence** — omit the field for no host Git.
 There is no public `baseUrl` and no separate enable flag. See [Git](./git.md).
 
-| Form | Meaning |
-|------|---------|
+| Form   | Meaning                                                                                   |
+| ------ | ----------------------------------------------------------------------------------------- |
 | `true` | Enable host git; resolve `git-engine.tar` via env / install dir / cache / optional fetch. |
-| object | Full `GitCreateOptions` (optional `engine` tar bytes; otherwise resolved). |
+| object | Full `GitCreateOptions` (optional `engine` tar bytes; otherwise resolved).                |
 
 Object fields:
 
-| Field | Meaning |
-|-------|---------|
-| `engine` | Optional `Uint8Array` of release `git-engine.tar` containing `git_engine.wasm`. Parallel to `kernel` / `catalogCompiler`. |
-| `mounts` | Multi-repo: `[{ path, sparse?, readOnly? }]`. Default when omitted: `[{ path: "/workspace/repo" }]`. One engine per path; duplicates fail closed. |
-| `sparse` | Cone-mode prefixes for the default mount when `mounts` is omitted (not full sparse-checkout language). |
-| `readOnly` | Reject push on default mounts (overridable per `mounts` entry). |
-| `identity` | Host commit identity `{ name, email }` when commit args omit name/email. |
-| `durable` | `{ id?, diskDir? }` — per-mount durable store for snapshot/restore rebind. MCSN never carries the ODB. |
-| `allowOrigins` / `fetch` | Bare-URL allowlist and host HTTP executor. Product remotes normally use `connections` plus real fetch. |
+| Field                    | Meaning                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine`                 | Optional `Uint8Array` of release `git-engine.tar` containing `git_engine.wasm`. Parallel to `kernel` / `catalogCompiler`.                         |
+| `mounts`                 | Multi-repo: `[{ path, sparse?, readOnly? }]`. Default when omitted: `[{ path: "/workspace/repo" }]`. One engine per path; duplicates fail closed. |
+| `sparse`                 | Cone-mode prefixes for the default mount when `mounts` is omitted (not full sparse-checkout language).                                            |
+| `readOnly`               | Reject push on default mounts (overridable per `mounts` entry).                                                                                   |
+| `identity`               | Host commit identity `{ name, email }` when commit args omit name/email.                                                                          |
+| `durable`                | `{ id?, diskDir? }` — per-mount durable store for snapshot/restore rebind. MCSN never carries the ODB.                                            |
+| `allowOrigins` / `fetch` | Bare-URL allowlist and host HTTP executor. Product remotes normally use `connections` plus real fetch.                                            |
 
 This is **not** a repository remote URL. Remotes use `connections` + guest `clone`/`fetch`/`push` URLs.
 
@@ -220,7 +220,7 @@ When `git` is set:
   Omit for empty engines on restore. With `diskDir`: re-openable `HostDirDurable` worktree at
   `{diskDir}/{safeId}/` (primary). Without: OPFS directory/blob when available, else
   process-memory AOGS by `id` (same process only). Details:
-  [Git — Durability](./git.md#durability-dir-reopen).
+  [Git — Durability](./git.md#durability).
 
 ```js
 // Minimal — resolves git-engine.tar (source env.sh after install, or pass engine bytes)

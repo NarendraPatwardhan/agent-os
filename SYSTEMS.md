@@ -911,7 +911,7 @@ a documented exclusion. The interpreter additionally gets _behavioral vectors_ (
 host-trap → suspend/resume, budget enforcement) so a future kernel — or any interpreter swap — is provably
 equivalent.
 
-`//memcontainers/conformance:conformance` is that broader gate. It walks the real shipped image tarballs
+`//memcontainers/conformance:test` is that broader gate. It walks the real shipped image tarballs
 (`minimal`, `posix`, `svc_test`, `atlas`, `paper`) and reads every embedded wasm module with the shared
 `wasm-imports` oracle, failing on any non-`mc` function import, undeclared syscall import, uncovered
 declared syscall without a documented exclusion, or stale exclusion whose syscall is now covered. It also
@@ -975,7 +975,7 @@ basename, and every applet accepts the same `*Ctx` boundary. The source compiles
 generated Zig mc sysroot: it has no WASI import layer and no applet-local syscall declarations.
 
 `registry_data.zig` is the one applet roster. `registry.zig` pairs each row with its implementation,
-while `bazel/coreutils.bzl` reads the same data to stamp the `mc_applets` section and build image
+while `programs/coreutils/defs.bzl` reads the same data to stamp the `mc_applets` section and build image
 symlinks. The graph produces full and minimal boxes at each capability tier
 (`isolated`, `read-only`, `read-write`, `full`), so the code present in a box, its declared ceiling, and
 the commands linked into an image stay aligned.
@@ -1215,11 +1215,11 @@ JavaScript, and a native Port for the server.
 
 Three faces use **one** shared engine core:
 
-| Face  | Path                                                                                                                 |
-| ----- | -------------------------------------------------------------------------------------------------------------------- |
-| Paths | thin host mount relay → generated engine mount operations → Gitz worktree; synthetic `.git` metadata only          |
+| Face  | Path                                                                                                                    |
+| ----- | ----------------------------------------------------------------------------------------------------------------------- |
+| Paths | thin host mount relay → generated engine mount operations → Gitz worktree; synthetic `.git` metadata only               |
 | Verbs | host_call name `"git"` selects an engine; local verbs execute directly and remotes additionally yield host HTTP effects |
-| CLI   | thin pure-mc `/bin/git` — argv/result renderer only, never the engine ABI                                           |
+| CLI   | thin pure-mc `/bin/git` — argv/result renderer only, never the engine ABI                                               |
 
 **Rule:** commands are a shell adapter. Catalog tool `git run` is not productized; guest verbs use
 host_call `"git"`. JavaScript, Elixir, the guest CLI, and mount relays do not implement Git
@@ -1227,15 +1227,21 @@ semantics independently.
 
 ### 11b.2 Engine and packaging
 
-| Host family                       | Product runner                                               | Storage/persistence                                      |
-| --------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------- |
+| Host family                       | Product runner                                              | Storage/persistence                                       |
+| --------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------- |
 | **JS (browser / Node)**           | standard `WebAssembly`, `wasm32-freestanding`, zero imports | Gitz `memory.Storage` + `fs.Mem`; opaque engine snapshots |
-| **Server (Elixir control plane)** | native Zig **`git-engine` Port**                             | Gitz filesystem storage + `fs.Os`; durable rooted tree    |
+| **Server (Elixir control plane)** | native Zig **`git-engine` Port**                            | Gitz filesystem storage + `fs.Os`; durable rooted tree    |
 
 Both are built from the same backend-generic Zig core and immutable, integrity-verified Gitz commit.
 The Wasm entrypoint and native Port loop are scalar/framing adapters with no Git decisions. Actual emitted
 artifacts run the same semantic fixtures; logical repository state must agree even though browser snapshot
 bytes and native directory representation do not.
+
+Inside `memcontainers/lib/git-engine/src`, `core.zig` remains the owning `Engine(Backend)` facade and
+dispatch/state boundary. Repository helpers and encodings, mount operations, Smart HTTP URL/ref policy,
+and pkt-line/upload-pack/receive-pack processing live in `repository_ops.zig`, `mount.zig`, `remote.zig`,
+and `protocol.zig` respectively. These are source modules of the same engine, not alternate host
+implementations; neither adapter may bypass them with platform-local Git behavior.
 
 Rejected product paths: libgit2, Emscripten/MEMFS, WASI, a wasmi-guest VCS, server-side Git Wasm,
 go-git/gojs/`wasm_exec.js`, a Git NIF, native shared-library product loading, ambient system `git`,
@@ -1254,14 +1260,14 @@ browser asset contains the freestanding Wasm module. Neither contains a `.so`, C
 libgit2 source/notices. The outer browser asset may remain a tar only because the existing artifact
 transport accepts tar bytes; it is not an implementation compatibility layer.
 
-| Component                        | Location                                                                            |
-| -------------------------------- | ----------------------------------------------------------------------------------- |
-| Shared engine + artifact tests   | `memcontainers/lib/git-engine/`                                                     |
-| Immutable upstream dependency    | root `MODULE.bazel` Gitz `archive_override`                                         |
-| Generated engine contract        | `memcontainers/contracts/git.kdl` and projections                                  |
-| JS loader/mount/effect adapters  | `memcontainers/sdk-js/core/src/git/`                                                |
-| Thin `/bin/git`                  | `memcontainers/programs/git/` (on **base** image)                                   |
-| BEAM Port/effect owner           | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
+| Component                       | Location                                                                            |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| Shared engine + artifact tests  | `memcontainers/lib/git-engine/`                                                     |
+| Immutable upstream dependency   | root `MODULE.bazel` Gitz `archive_override`                                         |
+| Generated engine contract       | `memcontainers/contracts/git.kdl` and projections                                   |
+| JS loader/mount/effect adapters | `memcontainers/sdk-js/core/src/git/`                                                |
+| Thin `/bin/git`                 | `memcontainers/programs/git/` (on **base** image)                                   |
+| BEAM Port/effect owner          | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
 
 ### 11b.3 Remotes — host-mediated only
 
@@ -1385,26 +1391,26 @@ defense in depth over Type B, never a substitute.
 
 ### 11b.7 Normative invariants
 
-| Invariant                         | Detail                                                                  |
-| --------------------------------- | ----------------------------------------------------------------------- |
-| Host source plane                 | Git mechanics on the host, not a multi‑MiB nested wasmi guest           |
-| One Zig/Gitz semantic core        | Commands, mounts, Git protocol, limits, errors, transactions once       |
-| JS = freestanding; server = native | Zero-import Wasm for JS; native Zig Port for BEAM; no server Git Wasm   |
-| One generated binary contract     | KDL-projected Zig/TS/Elixir codecs; binary streams; no engine JSON       |
-| Gitz owns Git                     | Objects/refs/index/worktree/pack/wire protocol; no libgit2 compatibility |
-| gitfs via MountFs                 | Thin relays only; no kernel Git ABI or duplicated host filesystem logic |
-| Thin `/bin/git` on base           | Pure-mc argv/result adapter, reduced fail-closed surface                 |
-| Host-mediated effects             | Engine never dials; CAP_NET + host_call `"git"`; credentials host-only  |
-| One engine per mount path         | Multi-mount OK; no multi-writer or mutable state sharing                 |
-| ODB outside MCSN                  | Durable rebind opt-in (A8)                                              |
-| Browser image; native directory   | Backend-specific bytes, identical logical repository semantics          |
-| Transactional remote apply        | Quarantine + expected refs + no partial visibility + crash recovery     |
-| Synthetic `.git` metadata only    | No objects, config-write, journal, snapshot, or stream façade           |
-| BEAM owns Port + effects          | NIF is relay only                                                       |
-| Type B required; Type A future    | Engine hardening ships now; deployment sandbox remains explicit         |
-| Immutable dependency/provenance   | Remote integrity pin, exact Gitz commit, Apache-2.0 attribution          |
-| Host commit identity              | Explicit/injected policy data; engine invents no identity or time       |
-| Tenant cache policy               | No implicit mutable cross-tenant cache; credentials never cached        |
+| Invariant                          | Detail                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| Host source plane                  | Git mechanics on the host, not a multi‑MiB nested wasmi guest            |
+| One Zig/Gitz semantic core         | Commands, mounts, Git protocol, limits, errors, transactions once        |
+| JS = freestanding; server = native | Zero-import Wasm for JS; native Zig Port for BEAM; no server Git Wasm    |
+| One generated binary contract      | KDL-projected Zig/TS/Elixir codecs; binary streams; no engine JSON       |
+| Gitz owns Git                      | Objects/refs/index/worktree/pack/wire protocol; no libgit2 compatibility |
+| gitfs via MountFs                  | Thin relays only; no kernel Git ABI or duplicated host filesystem logic  |
+| Thin `/bin/git` on base            | Pure-mc argv/result adapter, reduced fail-closed surface                 |
+| Host-mediated effects              | Engine never dials; CAP_NET + host_call `"git"`; credentials host-only   |
+| One engine per mount path          | Multi-mount OK; no multi-writer or mutable state sharing                 |
+| ODB outside MCSN                   | Durable rebind opt-in (A8)                                               |
+| Browser image; native directory    | Backend-specific bytes, identical logical repository semantics           |
+| Transactional remote apply         | Quarantine + expected refs + no partial visibility + crash recovery      |
+| Synthetic `.git` metadata only     | No objects, config-write, journal, snapshot, or stream façade            |
+| BEAM owns Port + effects           | NIF is relay only                                                        |
+| Type B required; Type A future     | Engine hardening ships now; deployment sandbox remains explicit          |
+| Immutable dependency/provenance    | Remote integrity pin, exact Gitz commit, Apache-2.0 attribution          |
+| Host commit identity               | Explicit/injected policy data; engine invents no identity or time        |
+| Tenant cache policy                | No implicit mutable cross-tenant cache; credentials never cached         |
 
 Product surface (commands, create options, agent constraints, env): **`docs/git.md`**. This section is
 the architecture contract; if product docs and this section disagree, fix both in the same change.
@@ -1685,7 +1691,7 @@ idempotent cleanup/reconciliation. Network-enabled profiles additionally receive
 route, public-IPv4-only NAT, and host/private/link-local/reserved destination filtering; profiles without
 guest networking do not depend on that host ruleset. Machine-specific binaries, the kernel, the helper,
 and runner initramfs images ship only in the separate
-`//server/sidecars:firecracker_runner_bundle`; the ordinary AgentOS package remains portable.
+`//server/sidecars/firecracker:bundle`; the ordinary AgentOS package remains portable.
 `//server:kvm_test` boots the pinned health microVM, validates the generated hello, exchanges generated
 request/response frames, and removes the runner.
 
@@ -1697,6 +1703,12 @@ deterministically from OCI layers into an initramfs. `//server:browser_kvm_test`
 vertical and exercises navigation, selectors, keyboard/mouse input, scrolling, screenshots, and cleanup;
 it must run on Linux x86_64 with `/dev/kvm`. Prepared snapshots, scoped channels, and production fleet
 scheduling are not claimed by this layer.
+
+The Firecracker implementation is one provider-owned tree. Its Elixir API and lifecycle modules live under
+`AgentOS.Sidecars.Firecracker`; its separately shipped helper, initramfs builder, health guest, and browser
+runner live under `server/sidecars/firecracker/`. Browser session/CDP behavior, framing, and limits are
+separate source modules within that runner, while the privileged helper separates configuration, layout,
+lifecycle, network, and snapshot responsibilities. Generic sidecar orchestration remains outside this tree.
 
 ---
 
@@ -1781,10 +1793,14 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │   ├── release_wasm.bzl       #   the size/opt wasm transition (opt + panic=abort + LTO)
 │   ├── wasm_opt.bzl           #   the final-link Binaryen policy shared by kernel + every guest
 │   ├── wasm32_build_test.bzl  #   the wasm32 build-test rule
+│   ├── mc_grammar.bzl         #   reusable grammar/projector boundary
 │   ├── mc_box.bzl             #   the wasi→mc conversion (mc_box / mc_wasi_program)
 │   ├── mc_program.bzl         #   stamp + attest a guest (mc_program / mc_service_layer / cc_*)
+│   ├── ts.bzl                 #   repository TypeScript project convention
+│   ├── elixir_transition.bzl  #   scoped OTP target transitions
 │   ├── rust_e2e_test.bzl      #   the always-RELEASE-host e2e macro (core + extended)
 │   └── tools/                 #   the mc build-graph executables:
+│       ├── format/             #     hermetic repository formatter adapters and runner
 │       ├── mc-stamp           #     append mc_tier/mc_budget/mc_service custom sections
 │       ├── mc-attest          #     import-purity + tier-fit gate (a build error)
 │       ├── mc-roster          #     least-privilege /bin symlink generation
@@ -1799,13 +1815,15 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │   ├── binaryen/               #   build definition for the host-only post-link optimizer
 │   ├── luau/  sqlite/          #   build definitions and patches for fetched upstream source
 │
+├── benchmarks/                # embedded/native/browser/server cross-runtime performance harness
 ├── server/                    # Elixir/OTP VM control-plane library over the wasmtime NIF
+│   └── sidecars/firecracker/  # separately packaged helper, guests, browser runner, and bundle
 ├── web/                       # browser workbench; live VMs and executable SDK examples
 │
 └── memcontainers/             # ★ the OS we author
     ├── contracts/             #   THE FOUR BOUNDARIES — single source of truth
     │   ├── *.kdl  codegen/     #     the contracts + the projector
-    │   ├── gen/  spec/         #     committed projections + generated specs (diff-gated)
+    │   └── gen/                 #     committed generated projections (diff-gated)
     ├── kernel/rust/           #   the OS; wasmi is a native crate → kernel.wasm
     ├── sysroot/               #   the guest side of the ABI (Rust + Zig wrappers)
     ├── wasi-adapter/          #   WASI(preview1) → mc link-injected shim
@@ -1839,8 +1857,14 @@ wasmtime host; the web app embeds the JS host), parallel to how a deployment is 
 two _hosts_ (the embedding libraries) are `memcontainers/hosts/{wasmtime,js}`; the Elixir control plane
 is not another host implementation.
 The build rules and the mc tooling are centralized under `bazel/` (the cross-cutting Starlark rules and the
-build-graph executables), while the three domain-specific `defs.bzl` files that only one package uses stay
-with their package (the contracts codegen, the wasmtime host transition, the size budget).
+build-graph executables), while domain-specific `defs.bzl` files that only one package uses stay
+with their package (including contracts codegen, coreutils assembly, the Wasmtime host transition, and
+the size budget).
+
+The root `benchmarks/` suite is organized by stable execution lane: `embedded`, `native`, `browser`, and
+`server`. Cross-lane benchmark contracts live in `benchmarks/lib/`; schema validation and aggregation live
+in `benchmarks/results/`. Implementation technology belongs inside a lane and must not become the public
+lane name, so replacing Wasmtime or the OTP runner does not rename the benchmark interface.
 
 **Bazel target names are role names inside a package namespace.** Internal targets use `snake_case`; a
 package with one primary reusable library exposes it as `:lib` rather than repeating the package name or
@@ -1850,8 +1874,9 @@ output, `_wasm` is the configured wasm artifact, `_release` is the compiler's re
 the final public program uses its installed name. Tests use `:test` only when they are the package's single
 obvious test; otherwise they end in `_test`, with compile-only gates named `build_test`. `_gen`, `_sync`,
 `_layer`, `_bin`, and `_lib` retain their literal roles. Kebab-case is reserved for user-facing command or
-installed binary names (`mc-grammar-gen`, `luau-analyze`); dots and numeric/double-underscore suffixes are
-reserved for private targets emitted by macros. Generated npm labels follow their upstream names. The
+installed binary names (`mc-grammar-gen`, `luau-analyze`); `_inner`, `_impl`, dots, and
+numeric/double-underscore suffixes are reserved for private targets emitted by macros. Generated npm
+labels follow their upstream names. The
 legacy `mcbox-*` labels are the sole grandfathered product family because they preserve cross-lane label
 compatibility explicitly documented in `programs/coreutils/BUILD.bazel`.
 
@@ -1931,21 +1956,21 @@ while the contract is still soft.
 
 ## 17. Implementation status
 
-| Area                                                                                                | Status                                                                 |
-| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI)                                                     | Built; 57 syscalls at ABI 1.7                                          |
-| Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots)            | Built                                                                  |
-| Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation                                   | Built                                                                  |
-| Shell, multicall coreutils, Luau (+ batteries)                                                      | Built                                                                  |
-| Domain engines: SQLite (`atlas`), typst (`paper`), and syntax parsing (`loom`)                      | Built                                                                  |
-| Images/flavors (minimal→loom→atlas/paper), `pkgfsd`, the stamping/roster tools                      | Built                                                                  |
-| Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode)                          | Built                                                                  |
-| Elixir/OTP actor-per-VM control plane over the wasmtime NIF                                         | Built; transport/deployment adapter is outside this repository         |
-| Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                               |
-| Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external |
-| JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                           |
-| Host source plane git (shared Zig/Gitz core; freestanding JS + native BEAM Port)                   | Built; Type B engine gates are executable, Type A deployment isolation remains future (§11b.6) |
-| Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)            |
+| Area                                                                                                | Status                                                                                         |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI)                                                     | Built; 57 syscalls at ABI 1.7                                                                  |
+| Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots)            | Built                                                                                          |
+| Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation                                   | Built                                                                                          |
+| Shell, multicall coreutils, Luau (+ batteries)                                                      | Built                                                                                          |
+| Domain engines: SQLite (`atlas`), typst (`paper`), and syntax parsing (`loom`)                      | Built                                                                                          |
+| Images/flavors (minimal→loom→atlas/paper), `pkgfsd`, the stamping/roster tools                      | Built                                                                                          |
+| Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode)                          | Built                                                                                          |
+| Elixir/OTP actor-per-VM control plane over the wasmtime NIF                                         | Built; transport/deployment adapter is outside this repository                                 |
+| Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                                                       |
+| Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external                         |
+| JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                                                   |
+| Host source plane git (shared Zig/Gitz core; freestanding JS + native BEAM Port)                    | Built; Type B engine gates are executable, Type A deployment isolation remains future (§11b.6) |
+| Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)                                    |
 
 The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the
 Elixir VM-control library, and the generic sidecar/Firecracker foundation plus its first typed browser

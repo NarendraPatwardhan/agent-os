@@ -60,7 +60,7 @@ rust_opt_test(
     ],
     edition = "2021",
     deps = [
-        "//memcontainers/hosts/wasmtime:host",
+        "//memcontainers/hosts/wasmtime:lib",
         "@rules_rust//rust/runfiles",
     ],
 )
@@ -91,7 +91,7 @@ js_test(
 )
 
 test_suite(
-    name = "conformance",
+    name = "test",
     tests = [
         ":abi_test",
         ":control_vectors_rust_test",

@@ -145,22 +145,24 @@ _mc_program = rule(
     },
 )
 
-def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
+def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None, target_stem = None):
     """Optimize, stamp, and attest a final linked guest wasm.
 
-    The private `<name>_opt` stage applies the repository-wide Binaryen policy before `_mc_program`
+    The private `<target_stem>_opt` stage applies the repository-wide Binaryen policy before `_mc_program`
     appends graph-authored metadata. INT budgets keep call sites self-documenting and are forwarded
     as strings because attr.int is 32-bit while fuel is ~2e12. A 0 budget means "no mc_budget
-    section" (the kernel default). `service` optionally stamps the resident-service name. Used by
-    the Zig/C++ lane; the Rust lane wraps it via `mc_rust_program`."""
+    section" (the kernel default). `service` optionally stamps the resident-service name.
+    `target_stem` separates snake_case internal build stages from an installed kebab-case `name`.
+    Used by the Zig/C++ lane; the Rust lane wraps it via `mc_rust_program`."""
+    stem = target_stem or name
     wasm_opt(
-        name = name + "_opt",
+        name = stem + "_opt",
         wasm = wasm,
         tags = ["manual"],
     )
     _mc_program(
         name = name,
-        wasm = ":" + name + "_opt",
+        wasm = ":" + stem + "_opt",
         tier = tier,
         mem = str(mem),
         fuel = str(fuel),

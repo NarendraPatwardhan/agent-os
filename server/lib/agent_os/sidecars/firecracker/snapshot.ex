@@ -1,7 +1,7 @@
 defmodule AgentOS.Sidecars.Firecracker.Snapshot do
   @moduledoc false
 
-  alias AgentOS.Sidecars.Firecracker.Helper
+  alias AgentOS.Sidecars.Firecracker.HostHelper
 
   @format "agentos-firecracker-prepared-v1"
   @state "vmstate"
@@ -67,7 +67,7 @@ defmodule AgentOS.Sidecars.Firecracker.Snapshot do
 
   def available?(key, opts) do
     case Keyword.get(opts, :launch, :jailed) do
-      :jailed -> Helper.snapshot_available?(key, opts)
+      :jailed -> HostHelper.snapshot_available?(key, opts)
       :direct -> direct_available?(key, opts)
     end
   end
@@ -81,14 +81,14 @@ defmodule AgentOS.Sidecars.Firecracker.Snapshot do
 
   def publish(id, key, paths, opts) do
     case Keyword.get(opts, :launch, :jailed) do
-      :jailed -> Helper.publish_snapshot(id, key, opts)
+      :jailed -> HostHelper.publish_snapshot(id, key, opts)
       :direct -> publish_direct(key, paths, opts)
     end
   end
 
   def invalidate(key, opts) do
     case Keyword.get(opts, :launch, :jailed) do
-      :jailed -> Helper.remove_snapshot(key, opts)
+      :jailed -> HostHelper.remove_snapshot(key, opts)
       :direct -> invalidate_direct(key, opts)
     end
   end
@@ -123,7 +123,7 @@ defmodule AgentOS.Sidecars.Firecracker.Snapshot do
   defp artifacts(opts) do
     case Keyword.get(opts, :launch, :jailed) do
       :jailed ->
-        Helper.artifacts(Keyword.get(opts, :profile), opts)
+        HostHelper.artifacts(Keyword.get(opts, :profile), opts)
 
       :direct ->
         {:ok,

@@ -1,0 +1,15 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "mkinitramfs",
+    srcs = ["mkinitramfs.rs"],
+    edition = "2021",
+)
+
+rust_test(
+    name = "mkinitramfs_test",
+    srcs = ["mkinitramfs.rs"],
+    edition = "2021",
+)

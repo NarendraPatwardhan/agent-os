@@ -102,5 +102,3 @@ def abi_library(name, contract, langs):
         additional_update_targets = sync_targets,
         visibility = ["//visibility:public"],
     )
-
-

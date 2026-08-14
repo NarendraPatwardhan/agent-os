@@ -117,8 +117,8 @@ export {
   layerContentDigests,
   lookupTemplate,
   publishTemplate,
-} from "./template_cache.js";
-export type { TemplateFillPolicy, TemplateHit } from "./template_cache.js";
+} from "./template-cache.js";
+export type { TemplateFillPolicy, TemplateHit } from "./template-cache.js";
 export type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 export type {
   Runtime,

@@ -1,0 +1,26 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+zig_binary(
+    name = "guest_raw",
+    main = "guest.zig",
+    tags = ["manual"],
+    deps = ["//memcontainers/contracts:runner_zig"],
+)
+
+zig_configure_binary(
+    name = "guest",
+    actual = ":guest_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    threaded = "single",
+)
+
+genrule(
+    name = "initramfs",
+    srcs = [":guest"],
+    outs = ["health-initramfs.cpio"],
+    cmd = "$(location //server/sidecars/firecracker/initramfs:mkinitramfs) $(location :guest) $@",
+    tools = ["//server/sidecars/firecracker/initramfs:mkinitramfs"],
+)

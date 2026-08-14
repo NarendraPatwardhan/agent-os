@@ -38,7 +38,7 @@ js_test(
         "//memcontainers/sdk-js/core:api_sources",
         "//memcontainers/sdk-js/elements:api_sources",
     ],
-    entry_point = "tools/check.mjs",
+    entry_point = "reference-check.mjs",
 )
 
 genrule(

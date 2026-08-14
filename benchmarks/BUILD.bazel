@@ -10,104 +10,110 @@ package(default_visibility = ["//visibility:public"])
 exports_files([
     "README.md",
     "SPEC.md",
-    "schema/result.schema.json",
+    "results/schema.json",
 ])
 
 mc_ts_project(
-    name = "shared_result_lib",
-    srcs = ["shared/result.ts"],
+    name = "result_lib",
+    srcs = ["lib/result.ts"],
 )
 
 mc_ts_project(
-    name = "shared_system_lib",
-    srcs = ["shared/system.ts"],
+    name = "system_lib",
+    srcs = ["lib/system.ts"],
     deps = ["//:node_modules/@types/bun"],
 )
 
 mc_ts_project(
-    name = "shared_core_lib",
-    srcs = ["shared/core.ts"],
+    name = "sdk_lib",
+    srcs = ["lib/sdk.ts"],
     deps = ["//memcontainers/sdk-js/core:lib"],
 )
 
 mc_ts_project(
-    name = "tools_lib",
+    name = "results_lib",
     srcs = [
-        "tools/aggregate.ts",
-        "tools/validate.ts",
+        "results/aggregate.ts",
+        "results/validate.ts",
     ],
     deps = [
-        ":shared_result_lib",
+        ":result_lib",
         "//:node_modules/@types/bun",
     ],
 )
 
 js_binary(
     name = "validate",
-    data = [":tools_lib"],
-    entry_point = "tools/validate.js",
+    data = [":results_lib"],
+    entry_point = "results/validate.js",
 )
 
 js_binary(
     name = "aggregate",
-    data = [":tools_lib"],
-    entry_point = "tools/aggregate.js",
+    data = [":results_lib"],
+    entry_point = "results/aggregate.js",
 )
 
 mc_ts_project(
-    name = "test_lib",
-    srcs = [
-        "test/result.test.ts",
-        "test/validate.test.ts",
-    ],
+    name = "result_test_lib",
+    srcs = ["test/result.test.ts"],
     deps = [
-        ":shared_result_lib",
-        ":tools_lib",
+        ":result_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+mc_ts_project(
+    name = "validate_test_lib",
+    srcs = ["test/validate.test.ts"],
+    deps = [
+        ":result_lib",
+        ":results_lib",
         "//:node_modules/@types/bun",
     ],
 )
 
 js_test(
-    name = "stats_tests",
+    name = "result_test",
     data = [
         "package.json",
-        ":test_lib",
+        ":result_test_lib",
     ],
     entry_point = "test/result.test.js",
 )
 
 js_test(
-    name = "validate_tests",
+    name = "validate_test",
     data = [
         "package.json",
-        ":test_lib",
+        ":validate_test_lib",
     ],
     entry_point = "test/validate.test.js",
 )
 
 test_suite(
-    name = "tests",
+    name = "test",
     tests = [
-        ":stats_tests",
-        ":validate_tests",
+        ":result_test",
+        ":validate_test",
     ],
 )
 
 mc_ts_project(
-    name = "js_runner_lib",
-    srcs = ["js/runner.ts"],
+    name = "embedded_runner_lib",
+    srcs = ["runners/embedded/runner.ts"],
     deps = [
-        ":shared_core_lib",
-        ":shared_result_lib",
-        ":shared_system_lib",
+        ":result_lib",
+        ":sdk_lib",
+        ":system_lib",
         "//:node_modules/@types/bun",
     ],
 )
 
 js_binary(
-    name = "js",
+    name = "embedded",
     data = [
-        ":js_runner_lib",
+        ":embedded_runner_lib",
         "//memcontainers/images:atlas",
         "//memcontainers/images:loom",
         "//memcontainers/images:minimal",
@@ -115,7 +121,7 @@ js_binary(
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
     ],
-    entry_point = "js/runner.js",
+    entry_point = "runners/embedded/runner.js",
     env = {
         "MC_ATLAS_IMAGE": "$(rlocationpath //memcontainers/images:atlas)",
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
@@ -128,19 +134,19 @@ js_binary(
 
 mc_ts_project(
     name = "browser_page_lib",
-    srcs = ["browser/page.ts"],
+    srcs = ["runners/browser/page.ts"],
     deps = [
-        ":shared_core_lib",
-        ":shared_result_lib",
+        ":result_lib",
+        ":sdk_lib",
     ],
 )
 
 mc_ts_project(
     name = "browser_runner_lib",
-    srcs = ["browser/runner.ts"],
+    srcs = ["runners/browser/runner.ts"],
     deps = [
-        ":shared_result_lib",
-        ":tools_lib",
+        ":result_lib",
+        ":results_lib",
         "//:node_modules/@types/bun",
     ],
 )
@@ -158,7 +164,7 @@ js_binary(
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/sdk-js/core:lib",
     ],
-    entry_point = "browser/runner.js",
+    entry_point = "runners/browser/runner.js",
     env = {
         "MC_ATLAS_IMAGE": "$(rlocationpath //memcontainers/images:atlas)",
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
@@ -170,9 +176,9 @@ js_binary(
 )
 
 rust_binary(
-    name = "wasmtime_bin",
-    srcs = ["wasmtime/main.rs"],
-    crate_root = "wasmtime/main.rs",
+    name = "native_bin",
+    srcs = glob(["runners/native/*.rs"]),
+    crate_root = "runners/native/main.rs",
     data = [
         "//memcontainers/images:atlas",
         "//memcontainers/images:loom",
@@ -184,7 +190,7 @@ rust_binary(
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//memcontainers/hosts/wasmtime:host",
+        "//memcontainers/hosts/wasmtime:lib",
         "@host_crates//:anyhow",
         "@host_crates//:serde",
         "@host_crates//:serde_json",
@@ -193,15 +199,16 @@ rust_binary(
 )
 
 host_release_binary(
-    name = "wasmtime",
-    bin = ":wasmtime_bin",
+    name = "native",
+    bin = ":native_bin",
 )
 
 mix_test(
-    name = "beam_impl",
+    name = "server_impl",
     srcs = [
-        "test/benchmark_test.exs",
-        "test/test_helper.exs",
+        "runners/server/result.exs",
+        "runners/server/runner_test.exs",
+        "runners/server/test_helper.exs",
     ],
     data = [
         ":mix.exs",
@@ -226,7 +233,7 @@ ln -s "$(realpath ../server/priv)" priv
 )
 
 elixir_test(
-    name = "beam",
-    actual = ":beam_impl",
+    name = "server",
+    actual = ":server_impl",
     tags = ["manual"],
 )

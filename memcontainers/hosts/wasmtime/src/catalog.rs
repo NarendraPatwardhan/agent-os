@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use crate::net::NetCapability;
 use crate::sha256_hex;
 use crate::ConnectionCredential;
 use crate::KernelHost;
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// The catalog facet of a connection: which spec + tool groups to compile for a connection reference.
 /// The credential + egress origins are NOT here — they live once in the net's `ConnectionRegistry` (the
@@ -849,7 +849,10 @@ fn compile_cached(
     let key = sha256_hex(
         format!(
             "{}\0{}\0{}\0{}",
-            mc_catalog_compiler::NATIVE_COMPILER_ID, schema_version, source.sha, canonical_opts
+            mc_catalog_compiler::NATIVE_COMPILER_ID,
+            schema_version,
+            source.sha,
+            canonical_opts
         )
         .as_bytes(),
     );

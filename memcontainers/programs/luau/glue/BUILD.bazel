@@ -233,6 +233,7 @@ mc_program(
     fuel = 400000000000,
     mem = 256 * 1024 * 1024,
     table = 40000,
+    target_stem = "luau_analyze",
     tier = "full",
     visibility = ["//visibility:public"],
     wasm = ":luau_analyze_wasm",

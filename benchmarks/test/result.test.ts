@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { profile, ResultBuilder, statistics } from "../shared/result.js";
+import { profile, ResultBuilder, statistics } from "../lib/result.js";
 
 const stats = statistics([5, 1, 3, 2, 4])!;
 assert.equal(stats.count, 5);

@@ -12,28 +12,27 @@ exports_files([
     "fixtures/pack/minimal.ref",
 ])
 
-filegroup(
-    name = "orch_pack_fixtures",
-    srcs = glob(["fixtures/pack/**"]),
-)
-
 zig_library(
     name = "core",
-    main = "src/core.zig",
     srcs = [
         "src/errors.zig",
+        "src/mount.zig",
         "src/paths.zig",
+        "src/protocol.zig",
+        "src/remote.zig",
+        "src/repository_ops.zig",
     ],
+    main = "src/core.zig",
     deps = [
-        "@gitz//src/plumbing/object",
-        "@gitz//src/plumbing",
-        "@gitz//src/plumbing/format/gitignore",
+        "//memcontainers/contracts:git_zig",
         "@gitz//src/config",
         "@gitz//src/fs",
-        "@gitz//src/storage/memory",
+        "@gitz//src/plumbing",
+        "@gitz//src/plumbing/format/gitignore",
+        "@gitz//src/plumbing/object",
         "@gitz//src/plumbing/protocol/packp",
+        "@gitz//src/storage/memory",
         "@gitz//src/worktree",
-        "//memcontainers/contracts:git_zig",
     ],
 )
 
@@ -41,14 +40,14 @@ zig_library(
     name = "browser_backend",
     main = "src/backends/browser.zig",
     deps = [
+        "//memcontainers/contracts:git_zig",
         "@gitz//src/fs",
-        "@gitz//src/plumbing/object",
         "@gitz//src/persistence",
         "@gitz//src/plumbing",
+        "@gitz//src/plumbing/object",
         "@gitz//src/remote",
         "@gitz//src/repo",
         "@gitz//src/storage/memory",
-        "//memcontainers/contracts:git_zig",
     ],
 )
 
@@ -56,6 +55,7 @@ zig_library(
     name = "native_backend",
     main = "src/backends/native.zig",
     deps = [
+        "//memcontainers/contracts:git_zig",
         "@gitz//src/fs",
         "@gitz//src/plumbing",
         "@gitz//src/remote",
@@ -63,7 +63,6 @@ zig_library(
         "@gitz//src/repo",
         "@gitz//src/storage/filesystem",
         "@gitz//src/storage/memory",
-        "//memcontainers/contracts:git_zig",
     ],
 )
 
@@ -73,8 +72,8 @@ zig_test(
     deps = [
         ":browser_backend",
         ":core",
-        "@gitz//src/plumbing/object",
         "//memcontainers/contracts:git_zig",
+        "@gitz//src/plumbing/object",
     ],
 )
 
@@ -86,11 +85,11 @@ zig_test(
 
 zig_binary(
     name = "git_engine_wasm_raw",
-    main = "src/wasm_main.zig",
     linkopts = [
         "-fno-entry",
         "-rdynamic",
     ],
+    main = "src/wasm_main.zig",
     tags = ["manual"],
     deps = [
         ":browser_backend",
@@ -122,20 +121,15 @@ genrule(
     cmd = "cp $< $@",
 )
 
-filegroup(
-    name = "git_engine_wasm",
-    srcs = [":git_engine.wasm"],
-)
-
 zig_binary(
     name = "git-engine",
     main = "src/port_main.zig",
     deps = [
         ":core",
         ":native_backend",
+        "//memcontainers/contracts:git_zig",
         "@gitz//src/plumbing/object",
         "@gitz//src/utils/sync",
-        "//memcontainers/contracts:git_zig",
     ],
 )
 
@@ -146,15 +140,8 @@ zig_configure_binary(
     threaded = "single",
 )
 
-filegroup(
-    name = "git_engine_server_artifacts",
-    srcs = [
-        ":git_engine_native_release",
-    ],
-)
-
 pkg_tar(
-    name = "git_engine_release",
+    name = "git_engine_browser_archive",
     files = {
         ":git_engine.wasm": "git_engine.wasm",
         "@gitz//:LICENSE": "share/licenses/gitz/LICENSE",
@@ -189,8 +176,8 @@ size_limit(
 js_test(
     name = "wasm_runtime_test",
     data = [
-        ":git_engine_wasm_module",
         "test/wasm/runtime_test.mjs",
+        ":git_engine_wasm_module",
     ],
     entry_point = "test/wasm/runtime_test.mjs",
     env = {"AGENTOS_GIT_WASM": "$(rlocationpath :git_engine_wasm_module)"},
@@ -199,8 +186,8 @@ js_test(
 js_test(
     name = "wasm_debug_runtime_test",
     data = [
-        ":git_engine_wasm_debug",
         "test/wasm/runtime_test.mjs",
+        ":git_engine_wasm_debug",
     ],
     entry_point = "test/wasm/runtime_test.mjs",
     env = {"AGENTOS_GIT_WASM": "$(rlocationpath :git_engine_wasm_debug)"},
@@ -209,8 +196,8 @@ js_test(
 js_test(
     name = "port_runtime_test",
     data = [
-        ":git-engine",
         "test/port/runtime_test.mjs",
+        ":git-engine",
     ],
     entry_point = "test/port/runtime_test.mjs",
     env = {"AGENTOS_GIT_ENGINE": "$(rlocationpath :git-engine)"},
@@ -219,23 +206,23 @@ js_test(
 js_test(
     name = "port_release_runtime_test",
     data = [
-        ":git_engine_native_release",
         "test/port/runtime_test.mjs",
+        ":git_engine_native_release",
     ],
     entry_point = "test/port/runtime_test.mjs",
     env = {"AGENTOS_GIT_ENGINE": "$(rlocationpath :git_engine_native_release)"},
 )
 
 test_suite(
-    name = "all",
+    name = "test",
     tests = [
         ":core_test",
         ":git_engine_native_build_test",
-        ":native_backend_test",
         ":git_engine_wasm_build_test",
         ":git_engine_wasm_size_limit",
-        ":port_runtime_test",
+        ":native_backend_test",
         ":port_release_runtime_test",
+        ":port_runtime_test",
         ":wasm_debug_runtime_test",
         ":wasm_runtime_test",
     ],

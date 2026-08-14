@@ -1898,11 +1898,7 @@ fn emit_ts_messages(messages: &[Message]) -> String {
                 ));
                 o.push_str(&format!("  switch (ctlReadU8(wire)) {{\n    case 0: {0} = undefined; break;\n    case 1: {0} = {1}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", local, ts_decode_expr(&f.ty)));
             } else {
-                o.push_str(&format!(
-                    "  const {} = {};\n",
-                    local,
-                    ts_decode_expr(&f.ty)
-                ));
+                o.push_str(&format!("  const {} = {};\n", local, ts_decode_expr(&f.ty)));
             }
         }
         o.push_str("  if (wire.off !== bytes.length) throw new WireError(\"trailing bytes\");\n");
@@ -3671,9 +3667,8 @@ end\n",
         return out;
     }
 
-    let mut out = String::from(
-        "<!-- generated from git.kdl; do not edit -->\n\n# Git engine protocol\n\n",
-    );
+    let mut out =
+        String::from("<!-- generated from git.kdl; do not edit -->\n\n# Git engine protocol\n\n");
     out.push_str("Envelope: `AOGQ|AOGR`, version `1.0`, 20-byte little-endian header.\n\n## Operations\n\n| Name | Opcode |\n|---|---:|\n");
     for node in nodes
         .iter()

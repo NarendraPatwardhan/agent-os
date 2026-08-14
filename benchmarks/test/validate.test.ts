@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { ResultBuilder } from "../shared/result.js";
-import { validate } from "../tools/validate.js";
+import { ResultBuilder } from "../lib/result.js";
+import { validate } from "../results/validate.js";
 
 function result() {
   const builder = new ResultBuilder({

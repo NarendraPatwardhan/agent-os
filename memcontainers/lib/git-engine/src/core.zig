@@ -8,7 +8,40 @@ const packp = @import("packp");
 const gitignore = @import("gitignore");
 const gitconfig = @import("gitconfig");
 const errors = @import("errors.zig");
+const mount_ops = @import("mount.zig");
 const paths_mod = @import("paths.zig");
+const protocol = @import("protocol.zig");
+const remote = @import("remote.zig");
+const repository_ops = @import("repository_ops.zig");
+
+const validRemoteUrl = remote.validRemoteUrl;
+const validRemoteName = remote.validRemoteName;
+const validFullRef = remote.validFullRef;
+const remoteTrackingDestination = remote.remoteTrackingDestination;
+const defaultRemoteDestination = remote.defaultRemoteDestination;
+const infoRefsUrl = remote.infoRefsUrl;
+const serviceUrl = remote.serviceUrl;
+const resolveSubmoduleHttpUrl = remote.resolveSubmoduleHttpUrl;
+
+const pathWithinAny = repository_ops.pathWithinAny;
+const joinU64 = repository_ops.joinU64;
+const lowU32 = repository_ops.lowU32;
+const highU32 = repository_ops.highU32;
+const pairsToPaths = repository_ops.pairsToPaths;
+const decisiveIgnorePattern = repository_ops.decisiveIgnorePattern;
+const formatIgnorePattern = repository_ops.formatIgnorePattern;
+const hashFromObjectId = repository_ops.hashFromObjectId;
+const objectIdsToHashes = repository_ops.objectIdsToHashes;
+const objectKind = repository_ops.objectKind;
+const referenceValue = repository_ops.referenceValue;
+const encodeReference = repository_ops.encodeReference;
+const removeStoredReference = repository_ops.removeStoredReference;
+const bumpGeneration = repository_ops.bumpGeneration;
+const signature = repository_ops.signature;
+const objectId = repository_ops.objectId;
+const readBoundedFile = repository_ops.readBoundedFile;
+const statusEntryLess = repository_ops.statusEntryLess;
+const submoduleEntryLess = repository_ops.submoduleEntryLess;
 
 pub const gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8";
 pub const slot_count: usize = 64;
@@ -1139,14 +1172,14 @@ pub fn Engine(comptime Backend: type) type {
             const request = try contract.MountRequest.decode(self.allocator, payload);
             switch (request.action) {
                 contract.MOUNT_ATTACH, contract.MOUNT_DETACH => return (contract.Result{ .kind = 4, .generation = session.mutation_generation, .count = 1 }).encode(self.allocator),
-                contract.MOUNT_STAT => return self.mountStat(session, request),
-                contract.MOUNT_READ => return self.mountRead(session, request),
-                contract.MOUNT_WRITE => return self.mountWrite(session, request),
-                contract.MOUNT_CREATE => return self.mountCreate(session, request),
-                contract.MOUNT_REMOVE => return self.mountRemove(session, request),
-                contract.MOUNT_RENAME => return self.mountRename(session, request),
-                contract.MOUNT_READDIR => return self.mountReadDir(session, request),
-                contract.MOUNT_CHMOD => return self.mountChmod(session, request),
+                contract.MOUNT_STAT => return mount_ops.stat(self.allocator, session, request),
+                contract.MOUNT_READ => return mount_ops.read(self.allocator, session, request),
+                contract.MOUNT_WRITE => return mount_ops.write(self.allocator, &self.backend, session, request),
+                contract.MOUNT_CREATE => return mount_ops.create(self.allocator, &self.backend, session, request),
+                contract.MOUNT_REMOVE => return mount_ops.remove(self.allocator, &self.backend, session, request),
+                contract.MOUNT_RENAME => return mount_ops.rename(self.allocator, &self.backend, session, request),
+                contract.MOUNT_READDIR => return mount_ops.readDir(self.allocator, session, request),
+                contract.MOUNT_CHMOD => return mount_ops.chmod(self.allocator, &self.backend, session, request),
                 else => return error.InvalidAction,
             }
         }
@@ -1330,7 +1363,7 @@ pub fn Engine(comptime Backend: type) type {
         fn remoteAdvertisement(self: *Self, owner: u32, session: *Backend.Session, remote_slot: *RemoteSlot, exchange: u32) u32 {
             if (remote_slot.opcode == contract.OP_PUSH) return self.remotePushAdvertisement(owner, session, remote_slot, exchange);
             if (remote_slot.opcode == contract.OP_SUBMODULE) return self.submoduleAdvertisement(owner, session, remote_slot, exchange);
-            const advertised = parseAdvertisedHead(self.allocator, remote_slot.response.items) catch {
+            const advertised = protocol.parseAdvertisedHead(self.allocator, remote_slot.response.items) catch {
                 const opcode = remote_slot.opcode;
                 const id = remote_slot.request_id;
                 self.freeRemoteSlot(remote_slot);
@@ -1343,13 +1376,13 @@ pub fn Engine(comptime Backend: type) type {
                 self.freeRemoteSlot(remote_slot);
                 return self.errorResponse(owner, opcode, id, @intCast(contract.ERROR_REFERENCE), 2);
             };
-            const target = findAdvertisedRef(remote_slot.response.items, source_ref) catch {
+            const target = protocol.findAdvertisedRef(remote_slot.response.items, source_ref) catch {
                 const opcode = remote_slot.opcode;
                 const id = remote_slot.request_id;
                 self.freeRemoteSlot(remote_slot);
                 return self.errorResponse(owner, opcode, id, @intCast(contract.ERROR_REFERENCE), 3);
             };
-            if (remote_slot.depth != 0 and !advertisementSupportsCapability(remote_slot.response.items, "shallow")) {
+            if (remote_slot.depth != 0 and !protocol.advertisementSupportsCapability(remote_slot.response.items, "shallow")) {
                 const opcode = remote_slot.opcode;
                 const id = remote_slot.request_id;
                 self.freeRemoteSlot(remote_slot);
@@ -1381,7 +1414,7 @@ pub fn Engine(comptime Backend: type) type {
                 return 0;
             };
             defer self.allocator.free(current_shallows);
-            if (current_shallows.len != 0 and !advertisementSupportsCapability(remote_slot.response.items, "shallow")) {
+            if (current_shallows.len != 0 and !protocol.advertisementSupportsCapability(remote_slot.response.items, "shallow")) {
                 upload.deinit();
                 return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REMOTE), 6);
             }
@@ -1408,7 +1441,7 @@ pub fn Engine(comptime Backend: type) type {
                     return 0;
                 };
             }
-            const body = encodeUploadPackRequest(self.allocator, &upload) catch {
+            const body = protocol.encodeUploadPackRequest(self.allocator, &upload) catch {
                 upload.deinit();
                 return 0;
             };
@@ -1428,7 +1461,7 @@ pub fn Engine(comptime Backend: type) type {
         fn submoduleAdvertisement(self: *Self, owner: u32, session: *Backend.Session, remote_slot: *RemoteSlot, exchange: u32) u32 {
             _ = session.repository orelse return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REPOSITORY), 40);
             const target = &remote_slot.submodules[remote_slot.submodule_index];
-            const advertised = parseAdvertisedHead(self.allocator, remote_slot.response.items) catch
+            const advertised = protocol.parseAdvertisedHead(self.allocator, remote_slot.response.items) catch
                 return self.finishRemoteError(owner, remote_slot, @intCast(contract.ERROR_REMOTE), 40);
             if (advertised.target_ref) |name| self.allocator.free(name);
             var upload = packp.newUploadPackRequest(self.allocator);
@@ -1441,7 +1474,7 @@ pub fn Engine(comptime Backend: type) type {
                     upload.deinit();
                     return 0;
                 };
-            const body = encodeUploadPackRequest(self.allocator, &upload) catch {
+            const body = protocol.encodeUploadPackRequest(self.allocator, &upload) catch {
                 upload.deinit();
                 return 0;
             };
@@ -1465,7 +1498,7 @@ pub fn Engine(comptime Backend: type) type {
                 self.freeRemoteSlot(remote_slot);
                 return self.errorResponse(owner, contract.OP_PUSH, id, @intCast(contract.ERROR_REFERENCE), 1);
             };
-            const old_hash = findAdvertisedRef(remote_slot.response.items, remote_slot.push_dest.?) catch plumbing.ZeroHash;
+            const old_hash = protocol.findAdvertisedRef(remote_slot.response.items, remote_slot.push_dest.?) catch plumbing.ZeroHash;
             const no_haves: []const plumbing.Hash = &.{};
             const one_have = [_]plumbing.Hash{old_hash};
             const haves: []const plumbing.Hash = if (old_hash.isZero()) no_haves else &one_have;
@@ -1475,7 +1508,7 @@ pub fn Engine(comptime Backend: type) type {
                 return self.errorResponse(owner, contract.OP_PUSH, id, @intCast(contract.ERROR_PACK), 4);
             };
             defer self.allocator.free(built.bytes);
-            const body = encodeReceivePackRequest(self.allocator, old_hash, new_hash, remote_slot.push_dest.?, built.bytes) catch return 0;
+            const body = protocol.encodeReceivePackRequest(self.allocator, old_hash, new_hash, remote_slot.push_dest.?, built.bytes) catch return 0;
             const body_handle = self.putStream(owner, body) catch return 0;
             remote_slot.response.clearRetainingCapacity();
             remote_slot.phase = .receive;
@@ -1503,7 +1536,7 @@ pub fn Engine(comptime Backend: type) type {
             const opcode = remote_slot.opcode;
             const request_id = remote_slot.request_id;
             const requested_shallows = remote_slot.upload.?.upload_request.shallows.items;
-            const parsed = parseUploadResponse(self.allocator, remote_slot.response.items, requested_shallows, remote_slot.depth != 0 or requested_shallows.len != 0) catch {
+            const parsed = protocol.parseUploadResponse(self.allocator, remote_slot.response.items, requested_shallows, remote_slot.depth != 0 or requested_shallows.len != 0) catch {
                 self.freeRemoteSlot(remote_slot);
                 return self.errorResponse(owner, opcode, request_id, @intCast(contract.ERROR_REMOTE), 4);
             };
@@ -1598,7 +1631,7 @@ pub fn Engine(comptime Backend: type) type {
             return try object.isAncestor(anc, desc);
         }
 
-        fn submoduleUploadComplete(self: *Self, owner: u32, session: *Backend.Session, remote_slot: *RemoteSlot, parsed: ParsedUploadResponse, pack: []const u8) u32 {
+        fn submoduleUploadComplete(self: *Self, owner: u32, session: *Backend.Session, remote_slot: *RemoteSlot, parsed: protocol.ParsedUploadResponse, pack: []const u8) u32 {
             _ = parsed;
             const target = &remote_slot.submodules[remote_slot.submodule_index];
             self.backend.submoduleImportBegin(self.allocator, session, target.path) catch
@@ -1759,114 +1792,6 @@ pub fn Engine(comptime Backend: type) type {
             slot.* = .{ .generation = generation };
         }
 
-        fn mountStat(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            const path = request.path orelse return error.MissingPath;
-            try validatePath(path);
-            const info = try session.filesystem.lstat(path);
-            return (contract.FileResult{ .path = path, .mode = info.mode, .size_low = lowU32(info.size), .size_high = highU32(info.size) }).encode(self.allocator);
-        }
-
-        fn mountRead(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            const path = request.path orelse return error.MissingPath;
-            try validatePath(path);
-            const info = try session.filesystem.lstat(path);
-            const offset = joinU64(request.offset_low orelse 0, request.offset_high orelse 0);
-            if (offset > @as(u64, @intCast(info.size))) return error.InvalidOffset;
-            const wanted: usize = @intCast(@min(@as(u64, request.limit orelse contract.MAX_FIELD_BYTES), @as(u64, contract.MAX_FIELD_BYTES)));
-            const count = @min(wanted, @as(usize, @intCast(@as(u64, @intCast(info.size)) - offset)));
-            const data = try self.allocator.alloc(u8, count);
-            defer self.allocator.free(data);
-            var file = try session.filesystem.open(path);
-            defer file.close() catch {};
-            var read: usize = 0;
-            while (read < data.len) {
-                const n = try file.readAt(data[read..], @intCast(offset + read));
-                if (n == 0) break;
-                read += n;
-            }
-            return (contract.FileResult{ .path = path, .mode = info.mode, .size_low = lowU32(info.size), .size_high = highU32(info.size), .data = data[0..read] }).encode(self.allocator);
-        }
-
-        fn mountWrite(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            if (self.backend.isReadOnly(session)) return error.ReadOnly;
-            const path = request.path orelse return error.MissingPath;
-            try validatePath(path);
-            const data = request.data orelse return error.MissingData;
-            if (std.fs.path.dirname(path)) |parent| try session.filesystem.mkdirAll(parent, 0o040755);
-            const offset = joinU64(request.offset_low orelse 0, request.offset_high orelse 0);
-            var file = try session.filesystem.openFile(path, @import("fs").O.RDWR | @import("fs").O.CREATE, request.mode orelse 0o666);
-            defer file.close() catch {};
-            var written: usize = 0;
-            while (written < data.len) written += try file.writeAt(data[written..], @intCast(offset + written));
-            if (request.mode) |mode| try session.filesystem.chmod(path, mode);
-            bumpGeneration(session);
-            const info = try session.filesystem.lstat(path);
-            return (contract.FileResult{ .path = path, .mode = info.mode, .size_low = lowU32(info.size), .size_high = highU32(info.size) }).encode(self.allocator);
-        }
-
-        fn mountCreate(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            if (self.backend.isReadOnly(session)) return error.ReadOnly;
-            const path = request.path orelse return error.MissingPath;
-            try validatePath(path);
-            if (request.flags & ~@as(u32, 1) != 0) return error.InvalidFlags;
-            if (request.flags & 1 != 0) {
-                const requested_mode = request.mode orelse 0o040755;
-                const directory_mode = if (requested_mode & 0o777 == 0) requested_mode | 0o755 else requested_mode;
-                try session.filesystem.mkdirAll(path, directory_mode);
-            } else {
-                if (std.fs.path.dirname(path)) |parent| try session.filesystem.mkdirAll(parent, 0o040755);
-                var file = try session.filesystem.create(path);
-                defer file.close() catch {};
-                if (request.data) |data| {
-                    var written: usize = 0;
-                    while (written < data.len) written += try file.writeAt(data[written..], @intCast(written));
-                }
-                if (request.mode) |mode| try session.filesystem.chmod(path, mode);
-            }
-            bumpGeneration(session);
-            return self.mountStat(session, request);
-        }
-
-        fn mountRemove(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            if (self.backend.isReadOnly(session)) return error.ReadOnly;
-            const path = request.path orelse return error.MissingPath;
-            try validatePath(path);
-            try session.filesystem.remove(path);
-            bumpGeneration(session);
-            return self.mutationResult(session, 1);
-        }
-        fn mountRename(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            if (self.backend.isReadOnly(session)) return error.ReadOnly;
-            const path = request.path orelse return error.MissingPath;
-            const other = request.other_path orelse return error.MissingTarget;
-            try validatePath(path);
-            try validatePath(other);
-            try session.filesystem.rename(path, other);
-            bumpGeneration(session);
-            return self.mutationResult(session, 1);
-        }
-        fn mountReadDir(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            const path = request.path orelse ".";
-            try validateDirectoryPath(path);
-            const infos = try session.filesystem.readDir(path);
-            defer session.filesystem.freeReadDir(infos);
-            const limit = @min(infos.len, @as(usize, request.limit orelse 256));
-            const entries = try self.allocator.alloc(contract.DirectoryEntry, limit);
-            defer self.allocator.free(entries);
-            for (infos[0..limit], 0..) |info, i| entries[i] = .{ .name = info.name, .mode = info.mode, .size_low = lowU32(info.size), .size_high = highU32(info.size) };
-            return (contract.DirectoryResult{ .entries = entries }).encode(self.allocator);
-        }
-        fn mountChmod(self: *Self, session: *Backend.Session, request: contract.MountRequest) ![]u8 {
-            if (self.backend.isReadOnly(session)) return error.ReadOnly;
-            const path = request.path orelse return error.MissingPath;
-            const mode = request.mode orelse return error.MissingMode;
-            try validatePath(path);
-            if (mode & ~@as(u32, 0o100755) != 0) return error.InvalidMode;
-            try session.filesystem.chmod(path, mode);
-            bumpGeneration(session);
-            return self.mountStat(session, request);
-        }
-
         fn restore(self: *Self, session: *Backend.Session, payload: []const u8) ![]u8 {
             if (self.backend.isReadOnly(session)) return error.ReadOnly;
             const snapshot = try contract.SnapshotResult.decode(self.allocator, payload);
@@ -1913,430 +1838,3 @@ pub fn Engine(comptime Backend: type) type {
 
 const validatePath = paths_mod.validate;
 const validateDirectoryPath = paths_mod.validateDirectory;
-
-fn validRemoteUrl(url: []const u8) bool {
-    if (url.len == 0 or url.len > contract.MAX_PATH_BYTES or std.mem.indexOfScalar(u8, url, 0) != null) return false;
-    return std.mem.startsWith(u8, url, "https://") or std.mem.startsWith(u8, url, "http://");
-}
-
-fn validRemoteName(name: []const u8) bool {
-    if (name.len == 0 or name.len > contract.MAX_REF_BYTES or name[0] == '-' or std.mem.indexOfScalar(u8, name, '/') != null or std.mem.indexOfScalar(u8, name, 0) != null) return false;
-    for (name) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.')) return false;
-    return !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..");
-}
-
-fn validFullRef(name: []const u8) bool {
-    if (!std.mem.startsWith(u8, name, "refs/") or name.len > contract.MAX_REF_BYTES or std.mem.indexOfScalar(u8, name, 0) != null or std.mem.indexOf(u8, name, "..") != null or std.mem.endsWith(u8, name, ".lock")) return false;
-    const ref_name = plumbing.ReferenceName.init(name);
-    ref_name.validate() catch return false;
-    return true;
-}
-
-fn remoteTrackingDestination(name: []const u8, remote_name: []const u8) bool {
-    if (!std.mem.startsWith(u8, name, "refs/remotes/")) return false;
-    const suffix = name["refs/remotes/".len..];
-    return std.mem.startsWith(u8, suffix, remote_name) and suffix.len > remote_name.len and suffix[remote_name.len] == '/';
-}
-
-fn defaultRemoteDestination(allocator: std.mem.Allocator, opcode: u16, remote_name: []const u8, source: []const u8) ![]u8 {
-    const source_name = plumbing.ReferenceName.init(source);
-    if (!source_name.isBranch()) return error.DefaultRefMustBeBranch;
-    if (opcode == contract.OP_CLONE) return allocator.dupe(u8, source);
-    return std.fmt.allocPrint(allocator, "refs/remotes/{s}/{s}", .{ remote_name, source_name.short() });
-}
-
-fn remoteBaseLen(url: []const u8) usize {
-    var end = url.len;
-    while (end > 0 and url[end - 1] == '/') end -= 1;
-    return end;
-}
-
-fn infoRefsUrl(allocator: std.mem.Allocator, url: []const u8, service: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/info/refs?service={s}", .{ url[0..remoteBaseLen(url)], service });
-}
-
-fn serviceUrl(allocator: std.mem.Allocator, url: []const u8, service: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ url[0..remoteBaseLen(url)], service });
-}
-
-fn resolveSubmoduleHttpUrl(allocator: std.mem.Allocator, parent_url: ?[]const u8, raw: []const u8) ![]u8 {
-    if (validRemoteUrl(raw)) return allocator.dupe(u8, raw);
-    if (raw.len == 0 or raw[0] == '/' or std.mem.indexOfScalar(u8, raw, '\\') != null or std.mem.indexOfScalar(u8, raw, 0) != null or std.mem.indexOfAny(u8, raw, "?#") != null)
-        return error.InvalidSubmoduleUrl;
-    const parent = parent_url orelse return error.RelativeSubmoduleWithoutOrigin;
-    if (!validRemoteUrl(parent) or std.mem.indexOfAny(u8, parent, "?#") != null) return error.InvalidParentUrl;
-    const scheme_end = std.mem.indexOf(u8, parent, "://") orelse return error.InvalidParentUrl;
-    const authority_start = scheme_end + 3;
-    const path_start = std.mem.indexOfScalarPos(u8, parent, authority_start, '/') orelse parent.len;
-    if (path_start == authority_start) return error.InvalidParentUrl;
-    const parent_path_end = remoteBaseLen(parent);
-    const combined = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ parent[path_start..parent_path_end], raw });
-    defer allocator.free(combined);
-    var segments: std.ArrayList([]const u8) = .empty;
-    defer segments.deinit(allocator);
-    var iterator = std.mem.splitScalar(u8, combined, '/');
-    while (iterator.next()) |segment| {
-        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) continue;
-        if (std.mem.eql(u8, segment, "..")) {
-            if (segments.items.len == 0) return error.SubmoduleUrlEscapesOrigin;
-            _ = segments.pop();
-            continue;
-        }
-        try segments.append(allocator, segment);
-    }
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    errdefer out.deinit();
-    try out.writer.writeAll(parent[0..path_start]);
-    for (segments.items) |segment| {
-        try out.writer.writeByte('/');
-        try out.writer.writeAll(segment);
-    }
-    return out.toOwnedSlice();
-}
-
-fn encodeUploadPackRequest(allocator: std.mem.Allocator, request: *const packp.UploadPackRequest) ![]u8 {
-    var allocating: std.Io.Writer.Allocating = .init(allocator);
-    errdefer allocating.deinit();
-    if (request.upload_request.wants.items.len == 0) return error.EmptyWants;
-    sortHashes(request.upload_request.wants.items);
-    const caps = try request.upload_request.capabilities.string(allocator);
-    defer allocator.free(caps);
-    var last = plumbing.ZeroHash;
-    for (request.upload_request.wants.items, 0..) |want, i| {
-        if (i > 0 and last.eql(want)) continue;
-        var hex: [plumbing.MaxHexSize]u8 = undefined;
-        const line = if (i == 0 and caps.len > 0)
-            try std.fmt.allocPrint(allocator, "want {s} {s}\n", .{ want.string(&hex), caps })
-        else
-            try std.fmt.allocPrint(allocator, "want {s}\n", .{want.string(&hex)});
-        defer allocator.free(line);
-        try writePktLine(&allocating.writer, line);
-        last = want;
-    }
-    sortHashes(request.upload_request.shallows.items);
-    last = plumbing.ZeroHash;
-    for (request.upload_request.shallows.items, 0..) |shallow_hash, i| {
-        if (i > 0 and last.eql(shallow_hash)) continue;
-        var hex: [plumbing.MaxHexSize]u8 = undefined;
-        const line = try std.fmt.allocPrint(allocator, "shallow {s}\n", .{shallow_hash.string(&hex)});
-        defer allocator.free(line);
-        try writePktLine(&allocating.writer, line);
-        last = shallow_hash;
-    }
-    switch (request.upload_request.depth) {
-        .commits => |count| if (count > 0) {
-            const line = try std.fmt.allocPrint(allocator, "deepen {d}\n", .{count});
-            defer allocator.free(line);
-            try writePktLine(&allocating.writer, line);
-        },
-        else => return error.UnsupportedDepth,
-    }
-    try allocating.writer.writeAll("0000");
-    sortHashes(request.upload_haves.haves.items);
-    last = plumbing.ZeroHash;
-    for (request.upload_haves.haves.items, 0..) |have, i| {
-        if (i > 0 and last.eql(have)) continue;
-        var hex: [plumbing.MaxHexSize]u8 = undefined;
-        const line = try std.fmt.allocPrint(allocator, "have {s}\n", .{have.string(&hex)});
-        defer allocator.free(line);
-        try writePktLine(&allocating.writer, line);
-        last = have;
-    }
-    try allocating.writer.writeAll("0009done\n");
-    return allocating.toOwnedSlice();
-}
-
-const AdvertisedHead = struct { hash: plumbing.Hash, target_ref: ?[]u8 };
-
-const ParsedUploadResponse = struct { pack_offset: usize, shallows: []plumbing.Hash, has_update: bool };
-
-fn parseUploadResponse(allocator: std.mem.Allocator, bytes: []const u8, existing: []const plumbing.Hash, shallow_exchange: bool) !ParsedUploadResponse {
-    var shallows: std.ArrayList(plumbing.Hash) = .empty;
-    errdefer shallows.deinit(allocator);
-    try shallows.appendSlice(allocator, existing);
-    var unshallows: std.ArrayList(plumbing.Hash) = .empty;
-    defer unshallows.deinit(allocator);
-    var offset: usize = 0;
-    var shallow_phase = shallow_exchange;
-    while (offset + 4 <= bytes.len) {
-        if (std.mem.eql(u8, bytes[offset..][0..4], "PACK")) break;
-        const length = std.fmt.parseInt(usize, bytes[offset..][0..4], 16) catch return error.InvalidUploadResponse;
-        offset += 4;
-        if (length == 0) {
-            shallow_phase = false;
-            continue;
-        }
-        if (length < 4 or offset + length - 4 > bytes.len) return error.InvalidUploadResponse;
-        const line = std.mem.trimEnd(u8, bytes[offset .. offset + length - 4], "\r\n");
-        offset += length - 4;
-        if (shallow_phase and std.mem.startsWith(u8, line, "shallow ")) {
-            const hash = try plumbing.parseHash(line[8..]);
-            var present = false;
-            for (shallows.items) |current| if (current.eql(hash)) {
-                present = true;
-                break;
-            };
-            if (!present) try shallows.append(allocator, hash);
-            continue;
-        }
-        if (shallow_phase and std.mem.startsWith(u8, line, "unshallow ")) {
-            try unshallows.append(allocator, try plumbing.parseHash(line[10..]));
-            continue;
-        }
-        if (std.mem.eql(u8, line, "NAK") or std.mem.startsWith(u8, line, "ACK ")) continue;
-        return error.InvalidUploadResponse;
-    }
-    if (offset + 4 > bytes.len or !std.mem.eql(u8, bytes[offset..][0..4], "PACK")) return error.MissingPack;
-    if (unshallows.items.len > 0) {
-        var write: usize = 0;
-        outer: for (shallows.items) |hash| {
-            for (unshallows.items) |removed| if (hash.eql(removed)) continue :outer;
-            shallows.items[write] = hash;
-            write += 1;
-        }
-        shallows.shrinkRetainingCapacity(write);
-    }
-    return .{ .pack_offset = offset, .shallows = try shallows.toOwnedSlice(allocator), .has_update = shallow_exchange };
-}
-
-fn advertisementSupportsCapability(bytes: []const u8, wanted: []const u8) bool {
-    var offset: usize = 0;
-    while (offset + 4 <= bytes.len) {
-        const length = std.fmt.parseInt(usize, bytes[offset..][0..4], 16) catch return false;
-        offset += 4;
-        if (length == 0) continue;
-        if (length < 4 or offset + length - 4 > bytes.len) return false;
-        const line = bytes[offset .. offset + length - 4];
-        offset += length - 4;
-        const nul = std.mem.indexOfScalar(u8, line, 0) orelse continue;
-        var capabilities = std.mem.splitScalar(u8, std.mem.trimEnd(u8, line[nul + 1 ..], "\r\n"), ' ');
-        while (capabilities.next()) |capability| {
-            const name = if (std.mem.indexOfScalar(u8, capability, '=')) |at| capability[0..at] else capability;
-            if (std.mem.eql(u8, name, wanted)) return true;
-        }
-        return false;
-    }
-    return false;
-}
-
-fn parseAdvertisedHead(allocator: std.mem.Allocator, bytes: []const u8) !AdvertisedHead {
-    var offset: usize = 0;
-    var head_hash: ?plumbing.Hash = null;
-    var first_hash: ?plumbing.Hash = null;
-    var target_ref: ?[]u8 = null;
-    errdefer if (target_ref) |name| allocator.free(name);
-    while (offset + 4 <= bytes.len) {
-        const length = std.fmt.parseInt(usize, bytes[offset..][0..4], 16) catch return error.InvalidAdvertisement;
-        offset += 4;
-        if (length == 0) continue;
-        if (length < 4 or offset + length - 4 > bytes.len) return error.InvalidAdvertisement;
-        var line = bytes[offset .. offset + length - 4];
-        offset += length - 4;
-        line = std.mem.trimEnd(u8, line, "\r\n");
-        if (std.mem.startsWith(u8, line, "# service=")) continue;
-        if (line.len < 42 or line[40] != ' ') continue;
-        const hash = try plumbing.parseHash(line[0..40]);
-        const nul = std.mem.indexOfScalar(u8, line, 0);
-        const ref_end = nul orelse line.len;
-        const ref_name = line[41..ref_end];
-        if (first_hash == null) first_hash = hash;
-        if (std.mem.eql(u8, ref_name, "HEAD")) head_hash = hash;
-        if (nul) |at| {
-            const caps = line[at + 1 ..];
-            var words = std.mem.splitScalar(u8, caps, ' ');
-            while (words.next()) |word| if (std.mem.startsWith(u8, word, "symref=HEAD:")) {
-                target_ref = try allocator.dupe(u8, word[12..]);
-                break;
-            };
-        }
-    }
-    return .{ .hash = head_hash orelse first_hash orelse return error.EmptyAdvertisement, .target_ref = target_ref };
-}
-
-fn findAdvertisedRef(bytes: []const u8, wanted: []const u8) !plumbing.Hash {
-    var offset: usize = 0;
-    while (offset + 4 <= bytes.len) {
-        const length = std.fmt.parseInt(usize, bytes[offset..][0..4], 16) catch return error.InvalidAdvertisement;
-        offset += 4;
-        if (length == 0) continue;
-        if (length < 4 or offset + length - 4 > bytes.len) return error.InvalidAdvertisement;
-        var line = std.mem.trimEnd(u8, bytes[offset .. offset + length - 4], "\r\n");
-        offset += length - 4;
-        if (line.len < 42 or line[40] != ' ') continue;
-        if (std.mem.indexOfScalar(u8, line, 0)) |nul| line = line[0..nul];
-        if (std.mem.eql(u8, line[41..], wanted)) return plumbing.parseHash(line[0..40]);
-    }
-    return error.ReferenceNotFound;
-}
-
-fn encodeReceivePackRequest(allocator: std.mem.Allocator, old_hash: plumbing.Hash, new_hash: plumbing.Hash, name: []const u8, pack: []const u8) ![]u8 {
-    var allocating: std.Io.Writer.Allocating = .init(allocator);
-    errdefer allocating.deinit();
-    var old_hex: [plumbing.MaxHexSize]u8 = undefined;
-    var new_hex: [plumbing.MaxHexSize]u8 = undefined;
-    const command = try std.fmt.allocPrint(allocator, "{s} {s} {s}\x00report-status", .{ old_hash.string(&old_hex), new_hash.string(&new_hex), name });
-    defer allocator.free(command);
-    try writePktLine(&allocating.writer, command);
-    try allocating.writer.writeAll("0000");
-    try allocating.writer.writeAll(pack);
-    return allocating.toOwnedSlice();
-}
-
-fn writePktLine(writer: *std.Io.Writer, payload: []const u8) !void {
-    if (payload.len > 65516) return error.PayloadTooLong;
-    var header: [4]u8 = undefined;
-    const digits = "0123456789abcdef";
-    const length: u16 = @intCast(payload.len + 4);
-    header[0] = digits[(length >> 12) & 0xf];
-    header[1] = digits[(length >> 8) & 0xf];
-    header[2] = digits[(length >> 4) & 0xf];
-    header[3] = digits[length & 0xf];
-    try writer.writeAll(&header);
-    try writer.writeAll(payload);
-}
-
-fn sortHashes(hashes: []plumbing.Hash) void {
-    std.mem.sort(plumbing.Hash, hashes, {}, struct {
-        fn less(_: void, left: plumbing.Hash, right: plumbing.Hash) bool {
-            return std.mem.order(u8, &left.bytes, &right.bytes) == .lt;
-        }
-    }.less);
-}
-
-fn pathWithinAny(path: []const u8, roots: []const []const u8) bool {
-    for (roots) |root| {
-        if (std.mem.eql(u8, path, root)) return true;
-        if (path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/') return true;
-    }
-    return false;
-}
-
-fn joinU64(low: u32, high: u32) u64 {
-    return @as(u64, low) | (@as(u64, high) << 32);
-}
-fn lowU32(value: anytype) u32 {
-    return @truncate(@as(u64, @intCast(value)));
-}
-fn highU32(value: anytype) u32 {
-    return @truncate(@as(u64, @intCast(value)) >> 32);
-}
-
-fn pairsToPaths(allocator: std.mem.Allocator, pairs: []const contract.StringPair) ![]const []const u8 {
-    const paths = try allocator.alloc([]const u8, pairs.len);
-    for (pairs, 0..) |pair, i| {
-        try validatePath(pair.key);
-        paths[i] = pair.key;
-    }
-    return paths;
-}
-
-fn decisiveIgnorePattern(patterns: []const gitignore.Pattern, path: []const []const u8, is_dir: bool) ?*const gitignore.Pattern {
-    var index = patterns.len;
-    while (index > 0) {
-        index -= 1;
-        const result = patterns[index].match(path, is_dir);
-        if (!result.isDecisive()) continue;
-        return if (result == .exclude) &patterns[index] else null;
-    }
-    return null;
-}
-
-fn formatIgnorePattern(allocator: std.mem.Allocator, pattern: *const gitignore.Pattern) ![]u8 {
-    var allocating: std.Io.Writer.Allocating = .init(allocator);
-    errdefer allocating.deinit();
-    if (pattern.inclusion) try allocating.writer.writeByte('!');
-    for (pattern.pattern, 0..) |segment, index| {
-        if (index != 0) try allocating.writer.writeByte('/');
-        try allocating.writer.writeAll(segment);
-    }
-    if (pattern.dir_only) try allocating.writer.writeByte('/');
-    return allocating.toOwnedSlice();
-}
-
-fn hashFromObjectId(value: contract.ObjectId) !plumbing.Hash {
-    const wanted: usize = switch (value.algorithm) {
-        1 => 20,
-        2 => 32,
-        else => return error.UnsupportedObjectAlgorithm,
-    };
-    if (value.bytes.len != wanted) return error.InvalidObjectId;
-    return plumbing.Hash.fromBytes(value.bytes);
-}
-
-fn objectIdsToHashes(allocator: std.mem.Allocator, values: []const contract.ObjectId) ![]plumbing.Hash {
-    const hashes = try allocator.alloc(plumbing.Hash, values.len);
-    errdefer allocator.free(hashes);
-    for (values, 0..) |value, i| hashes[i] = try hashFromObjectId(value);
-    return hashes;
-}
-
-fn objectKind(kind: plumbing.ObjectType) u16 {
-    return switch (kind) {
-        .commit => 1,
-        .tree => 2,
-        .blob => 3,
-        .tag => 4,
-        else => 0,
-    };
-}
-
-fn referenceValue(ref: *const plumbing.Reference) contract.ReferenceResult {
-    return switch (ref.type) {
-        .hash => .{ .name = ref.name.raw, .kind = 1, .object_id = objectId(&ref.hash) },
-        .symbolic => .{ .name = ref.name.raw, .kind = 2, .target = ref.target.raw },
-        .invalid => .{ .name = ref.name.raw, .kind = 0 },
-    };
-}
-
-fn encodeReference(allocator: std.mem.Allocator, ref: *const plumbing.Reference) ![]u8 {
-    return referenceValue(ref).encode(allocator);
-}
-
-fn removeStoredReference(store: anytype, name: plumbing.ReferenceName) !void {
-    const result = store.removeReference(name);
-    if (comptime @typeInfo(@TypeOf(result)) == .error_union) try result;
-}
-
-fn bumpGeneration(session: anytype) void {
-    session.mutation_generation +%= 1;
-    if (session.mutation_generation == 0) session.mutation_generation = 1;
-}
-
-fn signature(value: contract.Signature) object.Signature {
-    return .{
-        .name = value.name,
-        .email = value.email,
-        .when = value.unix_seconds,
-        .tz_offset_minutes = @intCast(value.timezone_minutes),
-    };
-}
-
-fn objectId(hash: *const plumbing.Hash) contract.ObjectId {
-    return .{ .algorithm = if (hash.slice().len == 20) 1 else 2, .bytes = hash.slice() };
-}
-
-fn readBoundedFile(allocator: std.mem.Allocator, filesystem: anytype, path: []const u8, limit: usize) ![]u8 {
-    const info = try filesystem.lstat(path);
-    if (info.isDir() or info.isSymlink() or info.size < 0) return error.InvalidFile;
-    const size: usize = @intCast(info.size);
-    if (size > limit) return error.FileTooLarge;
-    const data = try allocator.alloc(u8, size);
-    errdefer allocator.free(data);
-    var file = try filesystem.open(path);
-    defer file.close() catch {};
-    var read: usize = 0;
-    while (read < data.len) {
-        const amount = try file.readAt(data[read..], @intCast(read));
-        if (amount == 0) return error.UnexpectedEndOfFile;
-        read += amount;
-    }
-    return data;
-}
-
-fn statusEntryLess(_: void, left: contract.StatusEntry, right: contract.StatusEntry) bool {
-    return std.mem.lessThan(u8, left.path, right.path);
-}
-
-fn submoduleEntryLess(_: void, left: contract.SubmoduleEntry, right: contract.SubmoduleEntry) bool {
-    return std.mem.lessThan(u8, left.path, right.path);
-}

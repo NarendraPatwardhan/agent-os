@@ -1,2 +1,0 @@
-# The kernel — one contract, one shipped implementation: rust/. The completed Zig-kernel
-# experiment is archived on feature/zig and is not a selector in this build graph (SYSTEMS.md §14.3).

@@ -2604,7 +2604,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       sessionTemplateIndexSize,
       templateClassKey,
       layerContentDigests,
-    } = await import("../src/template_cache.js");
+    } = await import("../src/template-cache.js");
     clearSessionTemplateIndex();
     const store = new MemoryContentStore();
     const a = await mc.create({
@@ -2681,7 +2681,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
   // Local without explicit store does not pay template capture (create-latency policy).
   {
     const { clearSessionTemplateIndex, sessionTemplateIndexSize } =
-      await import("../src/template_cache.js");
+      await import("../src/template-cache.js");
     clearSessionTemplateIndex();
     const vm = await mc.create({
       runtime: LOCAL_RUNTIME,
@@ -2703,7 +2703,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
   // Durable class index stores a digest pointer, not a second full MCSN.
   {
     const { clearSessionTemplateIndex, lookupTemplate, templateClassKey, layerContentDigests } =
-      await import("../src/template_cache.js");
+      await import("../src/template-cache.js");
     clearSessionTemplateIndex();
     const store = new MemoryContentStore();
     const indexSizes: number[] = [];
