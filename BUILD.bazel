@@ -5,12 +5,34 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 # Root package: shared workspace configuration and repository-level generated files.
 # User-facing artifacts keep role-named targets in their owning packages (for example
 # //memcontainers/kernel/rust:kernel, //web:app, and //memcontainers/tests/e2e:core).
-# zig_index.json is referenced by MODULE.bazel's Zig toolchain pin.
+# zig_index.json is referenced by bazel/zig.MODULE.bazel's Zig toolchain pin.
 exports_files([
     "MODULE.bazel",
     "README.md",
     "zig_index.json",
 ])
+
+# Root MODULE.bazel plus every include() slice. Stamp tools follow include()
+# labels, so those files must be action inputs (the sandbox cannot see them
+# otherwise).
+filegroup(
+    name = "module_graph",
+    srcs = [
+        "MODULE.bazel",
+        "//bazel:erlang.MODULE.bazel",
+        "//bazel:js.MODULE.bazel",
+        "//bazel:lint.MODULE.bazel",
+        "//bazel:rust.MODULE.bazel",
+        "//bazel:zig.MODULE.bazel",
+        "//third_party/binaryen:binaryen.MODULE.bazel",
+        "//third_party/browser:browser.MODULE.bazel",
+        "//third_party/firecracker:firecracker.MODULE.bazel",
+        "//third_party/luauc:luauc.MODULE.bazel",
+        "//third_party/sqlite:sqlite.MODULE.bazel",
+        "//third_party/tree-sitter:tree-sitter.MODULE.bazel",
+    ],
+    visibility = ["//visibility:public"],
+)
 
 # The one shared TypeScript config for the whole JS workspace (hosts/js, sdk-js/, the contract TS
 # descriptors). mc_ts_project (//bazel:ts.bzl) pins every TS target to this — one config, no drift.

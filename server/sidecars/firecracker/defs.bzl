@@ -13,7 +13,9 @@ def _firecracker_bundle_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable.tool,
         arguments = [args],
-        inputs = depset([ctx.file.payload, ctx.info_file, ctx.file.module_file]),
+        inputs = depset(
+            [ctx.file.payload, ctx.info_file, ctx.file.module_file] + ctx.files.module_graph,
+        ),
         outputs = [output],
         mnemonic = "AgentOsFirecrackerBundleManifest",
         progress_message = "Stamping Firecracker bundle provenance",
@@ -26,6 +28,7 @@ firecracker_bundle = rule(
         "payload": attr.label(allow_single_file = True, mandatory = True),
         "tool": attr.label(executable = True, cfg = "exec", mandatory = True),
         "module_file": attr.label(allow_single_file = True, mandatory = True),
+        "module_graph": attr.label(allow_files = True, mandatory = True),
         "target_os": attr.string(mandatory = True),
         "target_arch": attr.string(mandatory = True),
     },

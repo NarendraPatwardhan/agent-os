@@ -1,0 +1,79 @@
+# Rust toolchain and isolated crate universes.
+#
+# wasm32-unknown-unknown is the kernel's rustc target (SYSTEMS.md's "freestanding"
+# is the Zig triple); guests compile there too. The host triple stays for the
+# projector and the wasmtime host (native, autodetected). A musl target triple
+# lands when a host binary goes static for distribution — deferred (see
+# hosts/wasmtime/defs.bzl: that needs a libc constraint + a musl C toolchain, not
+# just a triple). wasmtime is built from @host_crates; there is no prebuilt
+# libwasmtime.a to match.
+#
+# rules_rust 0.70 registers @rust_toolchains from this extension. use_repo keeps
+# the repo visible; the root MODULE.bazel does not re-register it.
+
+bazel_dep(name = "rules_rust", version = "0.70.0")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "wasm32-unknown-unknown",
+        "wasm32-wasip1",
+    ],
+)
+use_repo(rust, "rust_toolchains")
+
+# Isolated crate_universe locks. A single Cargo resolution feature-unifies common
+# deps and turns on std features (e.g. bitflags/std via wasmtime) that drag std
+# lang items into the no_std kernel. Each world is its own source of truth. The
+# `abi` role is the generated //memcontainers/contracts:*_rust bindings, not a
+# crate.
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//memcontainers/kernel/rust:Cargo.lock",
+    manifests = ["//memcontainers/kernel/rust:Cargo.toml"],
+)
+crate.from_cargo(
+    name = "host_crates",
+    cargo_lockfile = "//memcontainers/hosts/wasmtime:Cargo.lock",
+    manifests = ["//memcontainers/hosts/wasmtime:Cargo.toml"],
+)
+
+# typst (std, wasm32-wasip1): typst + typst-pdf + typst-assets + comemo/krilla/ICU
+# (~300 crates). Own lock so that graph never feature-unifies with kernel or host.
+# The wasm engine links typst/typst-pdf/time/serde[_json]; the host font extractor
+# (//memcontainers/programs/typst/fonts) links typst-assets.
+crate.from_cargo(
+    name = "typst_crates",
+    cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
+    manifests = ["//memcontainers/programs/typst/glue:Cargo.toml"],
+)
+
+# Adapter parsers (std, wasm32-wasip1): serde-based parsers for external API
+# description formats that feed /svc/adapters. Kept apart so OpenAPI/YAML/schema
+# deps never feature-unify with domain engines or no_std tools.
+crate.from_cargo(
+    name = "parse_crates",
+    cargo_lockfile = "//memcontainers/lib/parse:Cargo.lock",
+    manifests = ["//memcontainers/lib/parse:Cargo.toml"],
+)
+
+# Native parser-generator. tree-sitter-generate is a host build tool; its
+# std/regex graph must not feature-unify with the kernel or any guest engine.
+crate.from_cargo(
+    name = "grammar_gen_crates",
+    cargo_lockfile = "//bazel/tools/mc-grammar-gen:Cargo.lock",
+    manifests = ["//bazel/tools/mc-grammar-gen:Cargo.toml"],
+)
+
+# NIF (std, native): rustler for the BEAM host shim
+# (//memcontainers/hosts/wasmtime/nif). Own lock so rustler never feature-unifies
+# with the host's wasmtime graph. The `host` crate it wraps is a Bazel dep
+# (//memcontainers/hosts/wasmtime:lib), not a crate_universe entry.
+crate.from_cargo(
+    name = "nif_crates",
+    cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
+    manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
+)
+use_repo(crate, "crates", "grammar_gen_crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")

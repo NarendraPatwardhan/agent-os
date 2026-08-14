@@ -3,3 +3,11 @@
 # rust_e2e_test, wasm32_build_test, elixir_transition), gathered from the formerly-scattered
 # defs.bzl (kernel/rust, wasi-adapter, tests/e2e). The mc
 # build-graph executables are the subpackages under tools/.
+# *.MODULE.bazel slices are included from the root MODULE.bazel.
+exports_files([
+    "erlang.MODULE.bazel",
+    "js.MODULE.bazel",
+    "lint.MODULE.bazel",
+    "rust.MODULE.bazel",
+    "zig.MODULE.bazel",
+])

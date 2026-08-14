@@ -1,4 +1,4 @@
-# discord/rules_erlang enters the build via //MODULE.bazel's archive_override (B3: the dep
+# discord/rules_erlang enters via bazel/erlang.MODULE.bazel's archive_override (B3: the dep
 # fetch + patches live in-tree, the source does not). This package exists only to export the
 # override patch so the archive_override can reference it by label.
 exports_files([

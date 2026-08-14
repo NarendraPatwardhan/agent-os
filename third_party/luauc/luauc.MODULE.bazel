@@ -1,0 +1,14 @@
+# Luauc — reusable Luau compiler/runtime toolchain. AgentOS consumes only its
+# public component and runtime-profile contracts; AgentOS owns the mc provider
+# adapter, commands, packaging, and E2E.
+#
+# Commit-locked 0.0.0 archive_override: bump commit + strip_prefix + integrity
+# together.
+
+bazel_dep(name = "luauc", version = "0.0.0")
+archive_override(
+    module_name = "luauc",
+    integrity = "sha256-So4Rk+jLU8DXlrKWEwcs/3oTsGOMsMM3jkeKzkQ5ozU=",
+    strip_prefix = "luauc-7bb2b5c8a25d3fd189bfba04f7ae832cbece8836",
+    url = "https://github.com/OpytAI/luauc/archive/7bb2b5c8a25d3fd189bfba04f7ae832cbece8836.tar.gz",
+)

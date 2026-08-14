@@ -1,0 +1,65 @@
+# Elixir control-plane lane (//server). Supervisor over the wasm VMs
+# (SYSTEMS.md §13.1).
+#
+# Both halves are Discord forks: rules_elixir is git_overridden to
+# discord/rules_elixir, which itself wants discord/rules_erlang. Bazel overrides
+# apply only in the root module (includes count as the root), so the overrides
+# and the two in-tree patches live here. Toolchains are built from source (B4):
+# OTP 26.2.5 + Elixir 1.16.1 from the GitHub release tarballs.
+#
+# Module resolution is global, so these always resolve. Toolchain selection is
+# scoped by //bazel:elixir_transition.bzl for public //server entry points; the
+# raw //server implementation targets are target_compatible_with the erlang
+# constraint, so a plain `bazel build //...` skips them. rules_oci is the browser
+# runner image only; the Elixir server is not containerized.
+
+bazel_dep(name = "rules_erlang", version = "3.16.0")
+archive_override(
+    module_name = "rules_erlang",
+    integrity = "sha256-Gg1A/QyTHsHarL0EAOLhe2nTHlcnVngJLBZukcGvaOw=",
+    patch_strip = 1,
+    # B3: make the source-built OTP target public so discord/rules_elixir's
+    # elixir_build can reference it cross-repo.
+    patches = [
+        "//third_party/rules_erlang:patches/0001-erlang_config-otp-public-visibility.patch",
+        "//third_party/rules_erlang:patches/0002-quiet-install-lock-contention.patch",
+    ],
+    strip_prefix = "rules_erlang-b4b01911b99944fa0c9efb66bf3d9030ee784fa9/",
+    url = "https://github.com/discord/rules_erlang/archive/b4b01911b99944fa0c9efb66bf3d9030ee784fa9.tar.gz",
+)
+
+bazel_dep(name = "rules_elixir", version = "1.1.0")
+git_override(
+    module_name = "rules_elixir",
+    commit = "c8b30e5cf2b88566e6024ec44f42b5c33edb9002",
+    patch_strip = 1,
+    # B3: forward target_compatible_with through the mix_library macro (it drops
+    # it otherwise), so a bare `bazel build //...` skips the Elixir package as
+    # incompatible and only the scoped transition wrappers configure it.
+    patches = [
+        "//third_party/rules_elixir:patches/0001-forward-target-compatible-with.patch",
+        "//third_party/rules_elixir:patches/0002-elixir-app-compatibility.patch",
+    ],
+    remote = "https://github.com/discord/rules_elixir.git",
+)
+
+erlang_config = use_extension("@rules_erlang//bzlmod:extensions.bzl", "erlang_config")
+erlang_config.internal_erlang_from_github_release(
+    name = "26_2",
+    extra_make_opts = ["-j 4"],
+    sha256 = "de155c4ad9baab2b9e6c96dbd03bf955575a04dd6feee9c08758beb28484c9f6",
+    version = "26.2.5",
+)
+use_repo(erlang_config, "erlang_config")
+
+# `otp` is mandatory on the current extension (it links the Elixir build to the
+# named OTP install); `erlang_version` feeds the combined platform constraints.
+elixir_config = use_extension("@rules_elixir//bzlmod:extensions.bzl", "elixir_config")
+elixir_config.internal_elixir_from_github_release(
+    name = "1_16",
+    erlang_version = "26.2.5",
+    otp = "26_2",
+    sha256 = "b9e845458e03d62a24325b8424069e401cc7468e21143ecbca5514724d7cbaa0",
+    version = "1.16.1",
+)
+use_repo(elixir_config, "elixir_config")

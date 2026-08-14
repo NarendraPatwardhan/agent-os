@@ -5,9 +5,9 @@ load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
 # default-members" footnote (SYSTEMS.md).
 package(default_visibility = ["//visibility:public"])
 
-# Native host drivers (hosts/wasmtime, server, the projector). musl so a statically
-# linked host binary matches a prebuilt libwasmtime.a. This is the .bazelrc
-# default platform; wasm targets transition away from it.
+# Optional musl platform for a future statically linked host binary. Not the
+# repo default and not used to match a prebuilt libwasmtime.a — the wasmtime
+# host is built from @host_crates. Applied per-target if a binary needs it.
 platform(
     name = "host_musl",
     constraint_values = [
@@ -17,8 +17,8 @@ platform(
     ],
 )
 
-# Both kernels and every pure-wasm guest compile here: freestanding, no host OS,
-# no libc, no WASI (A2/A4/A6). The single most load-bearing target world.
+# The Rust kernel and every pure-wasm guest compile here: freestanding, no host
+# OS, no libc, no WASI (A2/A4/A6). The single most load-bearing target world.
 platform(
     name = "wasm32_freestanding",
     constraint_values = [
@@ -45,19 +45,10 @@ toolchain(
     toolchain_type = "@rules_zig//zig/target:toolchain_type",
 )
 
-# ---------------------------------------------------------------------------
-# Phase-later target worlds, defined with the toolchain that consumes them so the
-# path→world mapping stays complete and honest:
-#   wasm32_unknown — Rust's wasm32-unknown-unknown, for interpreter/ (wasmi as a
-#     wasm32 staticlib behind a C ABI; consumed only by the staged Zig kernel). Same Bazel
-#     constraints as wasm32_freestanding; the distinction is the Rust target triple.
-#   wasm32_unknown — Rust's wasm32-unknown-unknown, for interpreter/ (wasmi as a
-#     wasm32 staticlib behind a C ABI; consumed only by the staged Zig kernel).
-# ---------------------------------------------------------------------------
-
-# wasm32_wasi — WASI preview1, the INPUT world for converted Rust/C/C++ tools before
-# //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
-# rules_rust's wasm32-wasip1 toolchain (MODULE.bazel extra_target_triples) resolves here via os:wasi.
+# wasm32_wasi — WASI preview1, the INPUT world for converted Rust/C/C++ tools
+# before //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1`
+# imports to `mc`. rules_rust's wasm32-wasip1 toolchain (extra_target_triples in
+# bazel/rust.MODULE.bazel) resolves here via os:wasi.
 platform(
     name = "wasm32_wasi",
     constraint_values = [
@@ -66,11 +57,12 @@ platform(
     ],
 )
 
-# The zig toolchain for wasm32-wasi — the C/C++ domain tools (luau) compile their C++ here so zig's
-# wasi-libc/libc++ supplies the runtime (malloc / strtod / snprintf / math), then the //wasi-adapter
-# rewrites the syscall imports to mc. It coexists with rules_rust's wasm32-wasip1 toolchain on the
-# same os:wasi platform (different toolchain_type), so Rust-WASI and Zig/C++ guests can coexist.
-# Registered in MODULE.bazel.
+# The zig toolchain for wasm32-wasi — C/C++ domain tools compile here so zig's
+# wasi-libc/libc++ supplies the runtime (malloc / strtod / snprintf / math),
+# then the wasi-adapter rewrites the syscall imports to mc. It coexists with
+# rules_rust's wasm32-wasip1 toolchain on the same os:wasi platform (different
+# toolchain_type), so Rust-WASI and Zig/C++ guests can coexist. Registered in
+# MODULE.bazel.
 zig_target_toolchain(
     name = "wasm32_wasi_target",
     target = "wasm32-wasi",
@@ -86,16 +78,14 @@ toolchain(
     toolchain_type = "@rules_zig//zig/target:toolchain_type",
 )
 
-# ---------------------------------------------------------------------------
-# Elixir control-plane target worlds (//server), selected by the scoped transition
-# wrapper in //bazel:elixir_transition.bzl for public entry points. rules_erlang's
-# dual-platform model: the HOST platform carries the *_internal constraints
-# (→ build OTP + Elixir from source), the TARGET platform carries the version
-# constraints (→ select the @erlang_config / @elixir_config toolchains). The
-# constraints come from the toolchain extensions in //MODULE.bazel; this is never
-# the repo default (a global erlang platform would clobber the wasm/Rust/Zig
-# builds).
-# ---------------------------------------------------------------------------
+# Elixir control-plane target worlds (//server), selected by the scoped
+# transition wrapper in //bazel:elixir_transition.bzl for public entry points.
+# rules_erlang's dual-platform model: the HOST platform carries the *_internal
+# constraints (→ build OTP + Elixir from source), the TARGET platform carries
+# the version constraints (→ select the @erlang_config / @elixir_config
+# toolchains). The constraints come from bazel/erlang.MODULE.bazel; this is
+# never the repo default (a global erlang platform would clobber the
+# wasm/Rust/Zig builds).
 platform(
     name = "erlang_internal_platform",
     constraint_values = [

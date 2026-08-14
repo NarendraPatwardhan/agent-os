@@ -41,7 +41,9 @@ pkg_tar(
 firecracker_bundle(
     name = "bundle",
     module_file = "//:MODULE.bazel",
+    module_graph = "//:module_graph",
     payload = ":bundle_payload",
+    tags = ["manual"],
     target_arch = "x86_64",
     target_os = "linux",
     tool = "//bazel/tools/distribution-manifest",

@@ -100,10 +100,10 @@ export function decodeSidecarString(bytes: Uint8Array): SidecarString {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_STRING_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_STRING_VERSION) throw new WireError("unsupported message version");
-  const value = ctlReadStr(wire);
+  const decoded_value = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    value,
+    value: decoded_value,
   };
 }
 
@@ -123,10 +123,10 @@ export function decodeSidecarStrings(bytes: Uint8Array): SidecarStrings {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_STRINGS_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_STRINGS_VERSION) throw new WireError("unsupported message version");
-  const items = ctlReadMessageList(wire, decodeSidecarString);
+  const decoded_items = ctlReadMessageList(wire, decodeSidecarString);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    items,
+    items: decoded_items,
   };
 }
 
@@ -160,24 +160,24 @@ export function decodeSidecarGrant(bytes: Uint8Array): SidecarGrant {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_GRANT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_GRANT_VERSION) throw new WireError("unsupported message version");
-  const name = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const version = ctlReadU32(wire);
-  const contract_digest = ctlReadStr(wire);
-  const guest = ctlReadBool(wire);
-  const max_instances = ctlReadU32(wire);
-  const fork_policy = ctlReadU32(wire);
-  const config = ctlReadBytes(wire);
+  const decoded_name = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_version = ctlReadU32(wire);
+  const decoded_contract_digest = ctlReadStr(wire);
+  const decoded_guest = ctlReadBool(wire);
+  const decoded_max_instances = ctlReadU32(wire);
+  const decoded_fork_policy = ctlReadU32(wire);
+  const decoded_config = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    name,
-    kind,
-    version,
-    contract_digest,
-    guest,
-    max_instances,
-    fork_policy,
-    config,
+    name: decoded_name,
+    kind: decoded_kind,
+    version: decoded_version,
+    contract_digest: decoded_contract_digest,
+    guest: decoded_guest,
+    max_instances: decoded_max_instances,
+    fork_policy: decoded_fork_policy,
+    config: decoded_config,
   };
 }
 
@@ -207,20 +207,20 @@ export function decodeSidecarCapability(bytes: Uint8Array): SidecarCapability {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_CAPABILITY_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_CAPABILITY_VERSION) throw new WireError("unsupported message version");
-  const kind = ctlReadStr(wire);
-  const version = ctlReadU32(wire);
-  const contract_digest = ctlReadStr(wire);
-  const placements = decodeSidecarStrings(ctlReadBytes(wire));
-  const fork_policy = ctlReadU32(wire);
-  const max_instances_per_vm = ctlReadU32(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_version = ctlReadU32(wire);
+  const decoded_contract_digest = ctlReadStr(wire);
+  const decoded_placements = decodeSidecarStrings(ctlReadBytes(wire));
+  const decoded_fork_policy = ctlReadU32(wire);
+  const decoded_max_instances_per_vm = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    kind,
-    version,
-    contract_digest,
-    placements,
-    fork_policy,
-    max_instances_per_vm,
+    kind: decoded_kind,
+    version: decoded_version,
+    contract_digest: decoded_contract_digest,
+    placements: decoded_placements,
+    fork_policy: decoded_fork_policy,
+    max_instances_per_vm: decoded_max_instances_per_vm,
   };
 }
 
@@ -254,24 +254,24 @@ export function decodeSidecarInstance(bytes: Uint8Array): SidecarInstance {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_INSTANCE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_INSTANCE_VERSION) throw new WireError("unsupported message version");
-  const id = ctlReadStr(wire);
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const generation = ctlReadU32(wire);
-  const state = ctlReadU32(wire);
-  const created_at_ms = ctlReadI64(wire);
-  const expires_at_ms = ctlReadI64(wire);
-  const metadata = ctlReadBytes(wire);
+  const decoded_id = ctlReadStr(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_generation = ctlReadU32(wire);
+  const decoded_state = ctlReadU32(wire);
+  const decoded_created_at_ms = ctlReadI64(wire);
+  const decoded_expires_at_ms = ctlReadI64(wire);
+  const decoded_metadata = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    id,
-    grant,
-    kind,
-    generation,
-    state,
-    created_at_ms,
-    expires_at_ms,
-    metadata,
+    id: decoded_id,
+    grant: decoded_grant,
+    kind: decoded_kind,
+    generation: decoded_generation,
+    state: decoded_state,
+    created_at_ms: decoded_created_at_ms,
+    expires_at_ms: decoded_expires_at_ms,
+    metadata: decoded_metadata,
   };
 }
 
@@ -291,10 +291,10 @@ export function decodeSidecarInstances(bytes: Uint8Array): SidecarInstances {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_INSTANCES_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_INSTANCES_VERSION) throw new WireError("unsupported message version");
-  const items = ctlReadMessageList(wire, decodeSidecarInstance);
+  const decoded_items = ctlReadMessageList(wire, decodeSidecarInstance);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    items,
+    items: decoded_items,
   };
 }
 
@@ -322,18 +322,18 @@ export function decodeSidecarCreate(bytes: Uint8Array): SidecarCreate {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_CREATE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_CREATE_VERSION) throw new WireError("unsupported message version");
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const body = ctlReadBytes(wire);
-  const idempotency_key = ctlReadStr(wire);
-  const timeout_ms = ctlReadI64(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_body = ctlReadBytes(wire);
+  const decoded_idempotency_key = ctlReadStr(wire);
+  const decoded_timeout_ms = ctlReadI64(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    grant,
-    kind,
-    body,
-    idempotency_key,
-    timeout_ms,
+    grant: decoded_grant,
+    kind: decoded_kind,
+    body: decoded_body,
+    idempotency_key: decoded_idempotency_key,
+    timeout_ms: decoded_timeout_ms,
   };
 }
 
@@ -372,29 +372,29 @@ export function decodeSidecarCall(bytes: Uint8Array): SidecarCall {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_CALL_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_CALL_VERSION) throw new WireError("unsupported message version");
-  const id = ctlReadStr(wire);
-  const generation = ctlReadU32(wire);
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const operation = ctlReadStr(wire);
-  const body = ctlReadBytes(wire);
-  let idempotency_key: string | undefined;
+  const decoded_id = ctlReadStr(wire);
+  const decoded_generation = ctlReadU32(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_operation = ctlReadStr(wire);
+  const decoded_body = ctlReadBytes(wire);
+  let decoded_idempotency_key: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: idempotency_key = undefined; break;
-    case 1: idempotency_key = ctlReadStr(wire); break;
+    case 0: decoded_idempotency_key = undefined; break;
+    case 1: decoded_idempotency_key = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const timeout_ms = ctlReadI64(wire);
+  const decoded_timeout_ms = ctlReadI64(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    id,
-    generation,
-    grant,
-    kind,
-    operation,
-    body,
-    idempotency_key,
-    timeout_ms,
+    id: decoded_id,
+    generation: decoded_generation,
+    grant: decoded_grant,
+    kind: decoded_kind,
+    operation: decoded_operation,
+    body: decoded_body,
+    idempotency_key: decoded_idempotency_key,
+    timeout_ms: decoded_timeout_ms,
   };
 }
 
@@ -425,21 +425,21 @@ export function decodeSidecarError(bytes: Uint8Array): SidecarError {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_ERROR_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_ERROR_VERSION) throw new WireError("unsupported message version");
-  const code = ctlReadStr(wire);
-  const message = ctlReadStr(wire);
-  const retryable = ctlReadBool(wire);
-  let details: Uint8Array | undefined;
+  const decoded_code = ctlReadStr(wire);
+  const decoded_message = ctlReadStr(wire);
+  const decoded_retryable = ctlReadBool(wire);
+  let decoded_details: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: details = undefined; break;
-    case 1: details = ctlReadBytes(wire); break;
+    case 0: decoded_details = undefined; break;
+    case 1: decoded_details = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    code,
-    message,
-    retryable,
-    details,
+    code: decoded_code,
+    message: decoded_message,
+    retryable: decoded_retryable,
+    details: decoded_details,
   };
 }
 
@@ -468,19 +468,19 @@ export function decodeSidecarResult(bytes: Uint8Array): SidecarResult {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_RESULT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_RESULT_VERSION) throw new WireError("unsupported message version");
-  const ok = ctlReadBool(wire);
-  const body = ctlReadBytes(wire);
-  let error: SidecarError | undefined;
+  const decoded_ok = ctlReadBool(wire);
+  const decoded_body = ctlReadBytes(wire);
+  let decoded_error: SidecarError | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: error = undefined; break;
-    case 1: error = decodeSidecarError(ctlReadBytes(wire)); break;
+    case 0: decoded_error = undefined; break;
+    case 1: decoded_error = decodeSidecarError(ctlReadBytes(wire)); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    ok,
-    body,
-    error,
+    ok: decoded_ok,
+    body: decoded_body,
+    error: decoded_error,
   };
 }
 
@@ -523,33 +523,33 @@ export function decodeSidecarWarning(bytes: Uint8Array): SidecarWarning {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_WARNING_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_WARNING_VERSION) throw new WireError("unsupported message version");
-  const code = ctlReadStr(wire);
-  const message = ctlReadStr(wire);
-  let kind: string | undefined;
+  const decoded_code = ctlReadStr(wire);
+  const decoded_message = ctlReadStr(wire);
+  let decoded_kind: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: kind = undefined; break;
-    case 1: kind = ctlReadStr(wire); break;
+    case 0: decoded_kind = undefined; break;
+    case 1: decoded_kind = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let grant: string | undefined;
+  let decoded_grant: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: grant = undefined; break;
-    case 1: grant = ctlReadStr(wire); break;
+    case 0: decoded_grant = undefined; break;
+    case 1: decoded_grant = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let id: string | undefined;
+  let decoded_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: id = undefined; break;
-    case 1: id = ctlReadStr(wire); break;
+    case 0: decoded_id = undefined; break;
+    case 1: decoded_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    code,
-    message,
-    kind,
-    grant,
-    id,
+    code: decoded_code,
+    message: decoded_message,
+    kind: decoded_kind,
+    grant: decoded_grant,
+    id: decoded_id,
   };
 }
 
@@ -575,16 +575,16 @@ export function decodeSidecarDelete(bytes: Uint8Array): SidecarDelete {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_DELETE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_DELETE_VERSION) throw new WireError("unsupported message version");
-  const id = ctlReadStr(wire);
-  const generation = ctlReadU32(wire);
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
+  const decoded_id = ctlReadStr(wire);
+  const decoded_generation = ctlReadU32(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    id,
-    generation,
-    grant,
-    kind,
+    id: decoded_id,
+    generation: decoded_generation,
+    grant: decoded_grant,
+    kind: decoded_kind,
   };
 }
 
@@ -610,16 +610,16 @@ export function decodeSidecarGet(bytes: Uint8Array): SidecarGet {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_GET_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_GET_VERSION) throw new WireError("unsupported message version");
-  const id = ctlReadStr(wire);
-  const generation = ctlReadU32(wire);
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
+  const decoded_id = ctlReadStr(wire);
+  const decoded_generation = ctlReadU32(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    id,
-    generation,
-    grant,
-    kind,
+    id: decoded_id,
+    generation: decoded_generation,
+    grant: decoded_grant,
+    kind: decoded_kind,
   };
 }
 
@@ -641,11 +641,11 @@ export function decodeSidecarList(bytes: Uint8Array): SidecarList {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SIDECAR_LIST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SIDECAR_LIST_VERSION) throw new WireError("unsupported message version");
-  const grant = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
+  const decoded_grant = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    grant,
-    kind,
+    grant: decoded_grant,
+    kind: decoded_kind,
   };
 }

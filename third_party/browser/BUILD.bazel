@@ -1,1 +1,4 @@
-exports_files(["BUILD.bun.bazel"])
+exports_files([
+    "BUILD.bun.bazel",
+    "browser.MODULE.bazel",
+])

@@ -18,7 +18,9 @@ def _package_manifest_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable.tool,
         arguments = [args],
-        inputs = depset([ctx.file.payload, ctx.info_file, ctx.file.module_file]),
+        inputs = depset(
+            [ctx.file.payload, ctx.info_file, ctx.file.module_file] + ctx.files.module_graph,
+        ),
         outputs = [output],
         mnemonic = "AgentOsPackageManifest",
         progress_message = "Stamping AgentOS package provenance",
@@ -31,6 +33,7 @@ package_manifest = rule(
         "payload": attr.label(allow_single_file = True, mandatory = True),
         "tool": attr.label(executable = True, cfg = "exec", mandatory = True),
         "module_file": attr.label(allow_single_file = True, mandatory = True),
+        "module_graph": attr.label(allow_files = True, mandatory = True),
         "contract_major": attr.int(mandatory = True),
         "contract_minor": attr.int(mandatory = True),
         "capabilities": attr.int(mandatory = True),

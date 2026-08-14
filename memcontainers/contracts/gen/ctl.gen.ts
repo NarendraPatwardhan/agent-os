@@ -45,10 +45,10 @@ export function decodeExecArg(bytes: Uint8Array): ExecArg {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== EXEC_ARG_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== EXEC_ARG_VERSION) throw new WireError("unsupported message version");
-  const value = ctlReadStr(wire);
+  const decoded_value = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    value,
+    value: decoded_value,
   };
 }
 
@@ -94,35 +94,35 @@ export function decodeExecRequest(bytes: Uint8Array): ExecRequest {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== EXEC_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== EXEC_REQUEST_VERSION) throw new WireError("unsupported message version");
-  const mode = ctlReadI32(wire);
-  let command: string | undefined;
+  const decoded_mode = ctlReadI32(wire);
+  let decoded_command: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: command = undefined; break;
-    case 1: command = ctlReadStr(wire); break;
+    case 0: decoded_command = undefined; break;
+    case 1: decoded_command = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const argv = ctlReadMessageList(wire, decodeExecArg);
-  let cwd: string | undefined;
+  const decoded_argv = ctlReadMessageList(wire, decodeExecArg);
+  let decoded_cwd: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: cwd = undefined; break;
-    case 1: cwd = ctlReadStr(wire); break;
+    case 0: decoded_cwd = undefined; break;
+    case 1: decoded_cwd = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const env = ctlReadStrMap(wire);
-  let stdin: Uint8Array | undefined;
+  const decoded_env = ctlReadStrMap(wire);
+  let decoded_stdin: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: stdin = undefined; break;
-    case 1: stdin = ctlReadBytes(wire); break;
+    case 0: decoded_stdin = undefined; break;
+    case 1: decoded_stdin = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    mode,
-    command,
-    argv,
-    cwd,
-    env,
-    stdin,
+    mode: decoded_mode,
+    command: decoded_command,
+    argv: decoded_argv,
+    cwd: decoded_cwd,
+    env: decoded_env,
+    stdin: decoded_stdin,
   };
 }
 
@@ -147,14 +147,14 @@ export function decodeExecOutcome(bytes: Uint8Array): ExecOutcome {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== EXEC_OUTCOME_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== EXEC_OUTCOME_VERSION) throw new WireError("unsupported message version");
-  const exit_code = ctlReadI32(wire);
-  const stdout = ctlReadBytes(wire);
-  const stderr = ctlReadBytes(wire);
+  const decoded_exit_code = ctlReadI32(wire);
+  const decoded_stdout = ctlReadBytes(wire);
+  const decoded_stderr = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    exit_code,
-    stdout,
-    stderr,
+    exit_code: decoded_exit_code,
+    stdout: decoded_stdout,
+    stderr: decoded_stderr,
   };
 }
 
@@ -183,18 +183,18 @@ export function decodeFileStat(bytes: Uint8Array): FileStat {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== FILE_STAT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== FILE_STAT_VERSION) throw new WireError("unsupported message version");
-  const size = ctlReadI64(wire);
-  const is_dir = ctlReadBool(wire);
-  const is_symlink = ctlReadBool(wire);
-  const nlink = ctlReadU32(wire);
-  const mode = ctlReadU32(wire);
+  const decoded_size = ctlReadI64(wire);
+  const decoded_is_dir = ctlReadBool(wire);
+  const decoded_is_symlink = ctlReadBool(wire);
+  const decoded_nlink = ctlReadU32(wire);
+  const decoded_mode = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    size,
-    is_dir,
-    is_symlink,
-    nlink,
-    mode,
+    size: decoded_size,
+    is_dir: decoded_is_dir,
+    is_symlink: decoded_is_symlink,
+    nlink: decoded_nlink,
+    mode: decoded_mode,
   };
 }
 
@@ -219,14 +219,14 @@ export function decodeDirEntry(bytes: Uint8Array): DirEntry {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== DIR_ENTRY_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== DIR_ENTRY_VERSION) throw new WireError("unsupported message version");
-  const name = ctlReadStr(wire);
-  const is_dir = ctlReadBool(wire);
-  const is_symlink = ctlReadBool(wire);
+  const decoded_name = ctlReadStr(wire);
+  const decoded_is_dir = ctlReadBool(wire);
+  const decoded_is_symlink = ctlReadBool(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    name,
-    is_dir,
-    is_symlink,
+    name: decoded_name,
+    is_dir: decoded_is_dir,
+    is_symlink: decoded_is_symlink,
   };
 }
 
@@ -247,10 +247,10 @@ export function decodeDirEntries(bytes: Uint8Array): DirEntries {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== DIR_ENTRIES_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== DIR_ENTRIES_VERSION) throw new WireError("unsupported message version");
-  const entries = ctlReadMessageList(wire, decodeDirEntry);
+  const decoded_entries = ctlReadMessageList(wire, decodeDirEntry);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    entries,
+    entries: decoded_entries,
   };
 }
 
@@ -273,12 +273,12 @@ export function decodeSvcRequest(bytes: Uint8Array): SvcRequest {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SVC_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SVC_REQUEST_VERSION) throw new WireError("unsupported message version");
-  const service = ctlReadStr(wire);
-  const request = ctlReadBytes(wire);
+  const decoded_service = ctlReadStr(wire);
+  const decoded_request = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    service,
-    request,
+    service: decoded_service,
+    request: decoded_request,
   };
 }
 
@@ -301,12 +301,12 @@ export function decodeSvcResponse(bytes: Uint8Array): SvcResponse {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== SVC_RESPONSE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== SVC_RESPONSE_VERSION) throw new WireError("unsupported message version");
-  const status = ctlReadI32(wire);
-  const body = ctlReadBytes(wire);
+  const decoded_status = ctlReadI32(wire);
+  const decoded_body = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    status,
-    body,
+    status: decoded_status,
+    body: decoded_body,
   };
 }
 
@@ -413,96 +413,96 @@ export function decodeRelayEvent(bytes: Uint8Array): RelayEvent {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== RELAY_EVENT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== RELAY_EVENT_VERSION) throw new WireError("unsupported message version");
-  const kind = ctlReadStr(wire);
-  const handle = ctlReadI32(wire);
-  let request: Uint8Array | undefined;
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_handle = ctlReadI32(wire);
+  let decoded_request: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: request = undefined; break;
-    case 1: request = ctlReadBytes(wire); break;
+    case 0: decoded_request = undefined; break;
+    case 1: decoded_request = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let name: string | undefined;
+  let decoded_name: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: name = undefined; break;
-    case 1: name = ctlReadStr(wire); break;
+    case 0: decoded_name = undefined; break;
+    case 1: decoded_name = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let body: Uint8Array | undefined;
+  let decoded_body: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: body = undefined; break;
-    case 1: body = ctlReadBytes(wire); break;
+    case 0: decoded_body = undefined; break;
+    case 1: decoded_body = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let key: Uint8Array | undefined;
+  let decoded_key: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: key = undefined; break;
-    case 1: key = ctlReadBytes(wire); break;
+    case 0: decoded_key = undefined; break;
+    case 1: decoded_key = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let value: Uint8Array | undefined;
+  let decoded_value: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: value = undefined; break;
-    case 1: value = ctlReadBytes(wire); break;
+    case 0: decoded_value = undefined; break;
+    case 1: decoded_value = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let prefix: Uint8Array | undefined;
+  let decoded_prefix: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: prefix = undefined; break;
-    case 1: prefix = ctlReadBytes(wire); break;
+    case 0: decoded_prefix = undefined; break;
+    case 1: decoded_prefix = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let url: string | undefined;
+  let decoded_url: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: url = undefined; break;
-    case 1: url = ctlReadStr(wire); break;
+    case 0: decoded_url = undefined; break;
+    case 1: decoded_url = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let data: Uint8Array | undefined;
+  let decoded_data: Uint8Array | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: data = undefined; break;
-    case 1: data = ctlReadBytes(wire); break;
+    case 0: decoded_data = undefined; break;
+    case 1: decoded_data = ctlReadBytes(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let connection: string | undefined;
+  let decoded_connection: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: connection = undefined; break;
-    case 1: connection = ctlReadStr(wire); break;
+    case 0: decoded_connection = undefined; break;
+    case 1: decoded_connection = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let method: string | undefined;
+  let decoded_method: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: method = undefined; break;
-    case 1: method = ctlReadStr(wire); break;
+    case 0: decoded_method = undefined; break;
+    case 1: decoded_method = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let origin: string | undefined;
+  let decoded_origin: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: origin = undefined; break;
-    case 1: origin = ctlReadStr(wire); break;
+    case 0: decoded_origin = undefined; break;
+    case 1: decoded_origin = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let args_digest: string | undefined;
+  let decoded_args_digest: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: args_digest = undefined; break;
-    case 1: args_digest = ctlReadStr(wire); break;
+    case 0: decoded_args_digest = undefined; break;
+    case 1: decoded_args_digest = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    kind,
-    handle,
-    request,
-    name,
-    body,
-    key,
-    value,
-    prefix,
-    url,
-    data,
-    connection,
-    method,
-    origin,
-    args_digest,
+    kind: decoded_kind,
+    handle: decoded_handle,
+    request: decoded_request,
+    name: decoded_name,
+    body: decoded_body,
+    key: decoded_key,
+    value: decoded_value,
+    prefix: decoded_prefix,
+    url: decoded_url,
+    data: decoded_data,
+    connection: decoded_connection,
+    method: decoded_method,
+    origin: decoded_origin,
+    args_digest: decoded_args_digest,
   };
 }
 
@@ -536,23 +536,23 @@ export function decodeAutocompleteRequest(bytes: Uint8Array): AutocompleteReques
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== AUTOCOMPLETE_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== AUTOCOMPLETE_REQUEST_VERSION) throw new WireError("unsupported message version");
-  const source = ctlReadBytes(wire);
-  const cursor = ctlReadU32(wire);
-  let cwd: string | undefined;
+  const decoded_source = ctlReadBytes(wire);
+  const decoded_cursor = ctlReadU32(wire);
+  let decoded_cwd: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: cwd = undefined; break;
-    case 1: cwd = ctlReadStr(wire); break;
+    case 0: decoded_cwd = undefined; break;
+    case 1: decoded_cwd = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const env = ctlReadStrMap(wire);
-  const limit = ctlReadU32(wire);
+  const decoded_env = ctlReadStrMap(wire);
+  const decoded_limit = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    source,
-    cursor,
-    cwd,
-    env,
-    limit,
+    source: decoded_source,
+    cursor: decoded_cursor,
+    cwd: decoded_cwd,
+    env: decoded_env,
+    limit: decoded_limit,
   };
 }
 
@@ -577,14 +577,14 @@ export function decodeAutocompleteItem(bytes: Uint8Array): AutocompleteItem {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== AUTOCOMPLETE_ITEM_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== AUTOCOMPLETE_ITEM_VERSION) throw new WireError("unsupported message version");
-  const label = ctlReadStr(wire);
-  const value = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
+  const decoded_label = ctlReadStr(wire);
+  const decoded_value = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    label,
-    value,
-    kind,
+    label: decoded_label,
+    value: decoded_value,
+    kind: decoded_kind,
   };
 }
 
@@ -613,18 +613,18 @@ export function decodeAutocompleteResult(bytes: Uint8Array): AutocompleteResult 
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== AUTOCOMPLETE_RESULT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== AUTOCOMPLETE_RESULT_VERSION) throw new WireError("unsupported message version");
-  const replace_start = ctlReadU32(wire);
-  const replace_end = ctlReadU32(wire);
-  const common_prefix = ctlReadStr(wire);
-  const items = ctlReadMessageList(wire, decodeAutocompleteItem);
-  const truncated = ctlReadBool(wire);
+  const decoded_replace_start = ctlReadU32(wire);
+  const decoded_replace_end = ctlReadU32(wire);
+  const decoded_common_prefix = ctlReadStr(wire);
+  const decoded_items = ctlReadMessageList(wire, decodeAutocompleteItem);
+  const decoded_truncated = ctlReadBool(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    replace_start,
-    replace_end,
-    common_prefix,
-    items,
-    truncated,
+    replace_start: decoded_replace_start,
+    replace_end: decoded_replace_end,
+    common_prefix: decoded_common_prefix,
+    items: decoded_items,
+    truncated: decoded_truncated,
   };
 }
 

@@ -400,6 +400,7 @@ package_manifest(
     contract_minor = 0,
     elixir_version = "1.16",
     module_file = "//:MODULE.bazel",
+    module_graph = "//:module_graph",
     otp_version = "26.2",
     payload = ":agent_os_package_payload",
     target_abi = "gnu",

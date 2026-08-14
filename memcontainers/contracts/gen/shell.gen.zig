@@ -1,7 +1,7 @@
 // @generated from contracts/shell.kdl by //contracts/codegen:projector — do not edit.
 
 const std = @import("std");
-pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes };
+pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes, LimitExceeded };
 pub const StringPair = struct { key: []const u8, value: []const u8 };
 
 fn ctlPutU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u8) !void { try out.append(allocator, v); }
@@ -50,12 +50,12 @@ pub const Candidate = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != CANDIDATE_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != CANDIDATE_VERSION) return WireError.UnsupportedVersion;
-        const value = try ctlReadStr(bytes, &off);
-        const kind = try ctlReadStr(bytes, &off);
+        const decoded_value = try ctlReadStr(bytes, &off);
+        const decoded_kind = try ctlReadStr(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .value = value,
-            .kind = kind,
+            .value = decoded_value,
+            .kind = decoded_kind,
         };
     }
 };
@@ -83,14 +83,14 @@ pub const ProbeRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != PROBE_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != PROBE_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const source = try ctlReadBytes(bytes, &off);
-        const cursor = try ctlReadU32(bytes, &off);
-        const interactive = try ctlReadBool(bytes, &off);
+        const decoded_source = try ctlReadBytes(bytes, &off);
+        const decoded_cursor = try ctlReadU32(bytes, &off);
+        const decoded_interactive = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .source = source,
-            .cursor = cursor,
-            .interactive = interactive,
+            .source = decoded_source,
+            .cursor = decoded_cursor,
+            .interactive = decoded_interactive,
         };
     }
 };
@@ -127,24 +127,24 @@ pub const ProbeResponse = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != PROBE_RESPONSE_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != PROBE_RESPONSE_VERSION) return WireError.UnsupportedVersion;
-        const replace_start = try ctlReadU32(bytes, &off);
-        const replace_end = try ctlReadU32(bytes, &off);
-        const prefix = try ctlReadStr(bytes, &off);
-        const context = try ctlReadStr(bytes, &off);
-        const quote = try ctlReadStr(bytes, &off);
-        const shell_candidates = try ctlReadMessageList(Candidate, allocator, bytes, &off);
-        const truncated = try ctlReadBool(bytes, &off);
-        const continuation = try ctlReadBool(bytes, &off);
+        const decoded_replace_start = try ctlReadU32(bytes, &off);
+        const decoded_replace_end = try ctlReadU32(bytes, &off);
+        const decoded_prefix = try ctlReadStr(bytes, &off);
+        const decoded_context = try ctlReadStr(bytes, &off);
+        const decoded_quote = try ctlReadStr(bytes, &off);
+        const decoded_shell_candidates = try ctlReadMessageList(Candidate, allocator, bytes, &off);
+        const decoded_truncated = try ctlReadBool(bytes, &off);
+        const decoded_continuation = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .replace_start = replace_start,
-            .replace_end = replace_end,
-            .prefix = prefix,
-            .context = context,
-            .quote = quote,
-            .shell_candidates = shell_candidates,
-            .truncated = truncated,
-            .continuation = continuation,
+            .replace_start = decoded_replace_start,
+            .replace_end = decoded_replace_end,
+            .prefix = decoded_prefix,
+            .context = decoded_context,
+            .quote = decoded_quote,
+            .shell_candidates = decoded_shell_candidates,
+            .truncated = decoded_truncated,
+            .continuation = decoded_continuation,
         };
     }
 };
@@ -175,18 +175,18 @@ pub const RenderRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RENDER_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RENDER_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const replace_start = try ctlReadU32(bytes, &off);
-        const replace_end = try ctlReadU32(bytes, &off);
-        const quote = try ctlReadStr(bytes, &off);
-        const candidates = try ctlReadMessageList(Candidate, allocator, bytes, &off);
-        const truncated = try ctlReadBool(bytes, &off);
+        const decoded_replace_start = try ctlReadU32(bytes, &off);
+        const decoded_replace_end = try ctlReadU32(bytes, &off);
+        const decoded_quote = try ctlReadStr(bytes, &off);
+        const decoded_candidates = try ctlReadMessageList(Candidate, allocator, bytes, &off);
+        const decoded_truncated = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .replace_start = replace_start,
-            .replace_end = replace_end,
-            .quote = quote,
-            .candidates = candidates,
-            .truncated = truncated,
+            .replace_start = decoded_replace_start,
+            .replace_end = decoded_replace_end,
+            .quote = decoded_quote,
+            .candidates = decoded_candidates,
+            .truncated = decoded_truncated,
         };
     }
 };
@@ -214,14 +214,14 @@ pub const Item = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != ITEM_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != ITEM_VERSION) return WireError.UnsupportedVersion;
-        const label = try ctlReadStr(bytes, &off);
-        const value = try ctlReadStr(bytes, &off);
-        const kind = try ctlReadStr(bytes, &off);
+        const decoded_label = try ctlReadStr(bytes, &off);
+        const decoded_value = try ctlReadStr(bytes, &off);
+        const decoded_kind = try ctlReadStr(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .label = label,
-            .value = value,
-            .kind = kind,
+            .label = decoded_label,
+            .value = decoded_value,
+            .kind = decoded_kind,
         };
     }
 };
@@ -252,18 +252,18 @@ pub const CompletionResult = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != COMPLETION_RESULT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != COMPLETION_RESULT_VERSION) return WireError.UnsupportedVersion;
-        const replace_start = try ctlReadU32(bytes, &off);
-        const replace_end = try ctlReadU32(bytes, &off);
-        const common_prefix = try ctlReadStr(bytes, &off);
-        const items = try ctlReadMessageList(Item, allocator, bytes, &off);
-        const truncated = try ctlReadBool(bytes, &off);
+        const decoded_replace_start = try ctlReadU32(bytes, &off);
+        const decoded_replace_end = try ctlReadU32(bytes, &off);
+        const decoded_common_prefix = try ctlReadStr(bytes, &off);
+        const decoded_items = try ctlReadMessageList(Item, allocator, bytes, &off);
+        const decoded_truncated = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .replace_start = replace_start,
-            .replace_end = replace_end,
-            .common_prefix = common_prefix,
-            .items = items,
-            .truncated = truncated,
+            .replace_start = decoded_replace_start,
+            .replace_end = decoded_replace_end,
+            .common_prefix = decoded_common_prefix,
+            .items = decoded_items,
+            .truncated = decoded_truncated,
         };
     }
 };

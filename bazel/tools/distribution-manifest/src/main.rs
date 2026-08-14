@@ -2,9 +2,10 @@
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 const BLOCK: usize = 512;
 
@@ -38,7 +39,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 fn stamp_server(args: &[String]) -> Result<(), String> {
     let input = fs::read(&args[0]).map_err(|e| format!("read payload: {e}"))?;
     let commit = stable_commit(&args[2])?;
-    let module = fs::read_to_string(&args[3]).map_err(|e| format!("read MODULE.bazel: {e}"))?;
+    let module = load_module_graph(&args[3])?;
     let gitz = module_pin(&module, "archive_override", "module_name", "gitz")?;
     let gitz_commit = gitz
         .url
@@ -93,7 +94,7 @@ fn stamp_server(args: &[String]) -> Result<(), String> {
 fn stamp_firecracker(args: &[String]) -> Result<(), String> {
     let input = fs::read(&args[0]).map_err(|e| format!("read payload: {e}"))?;
     let commit = stable_commit(&args[2])?;
-    let module = fs::read_to_string(&args[3]).map_err(|e| format!("read MODULE.bazel: {e}"))?;
+    let module = load_module_graph(&args[3])?;
     let firecracker = module_pin(&module, "http_archive", "name", "firecracker")?;
     let kernel = module_pin(&module, "http_file", "name", "firecracker_kernel")?;
     let files = tar_files(&input, "agent-os-firecracker-runner")?;
@@ -153,6 +154,59 @@ fn stable_commit(path: &str) -> Result<String, String> {
 
 fn is_hex(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Read the root MODULE.bazel and every `include("//pkg:file")` slice it names.
+/// Pins may live in those slices; the stamp tool must see the same graph Bazel does.
+fn load_module_graph(root: &str) -> Result<String, String> {
+    let root = PathBuf::from(root);
+    let workspace = root
+        .parent()
+        .ok_or("MODULE.bazel has no parent directory")?
+        .to_path_buf();
+    let mut texts = Vec::new();
+    let mut queue = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(path) = queue.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        for include in include_labels(&text) {
+            queue.push(workspace.join(include_to_path(&include)?));
+        }
+        texts.push(text);
+    }
+    Ok(texts.join("\n"))
+}
+
+fn include_labels(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("include(\"")
+                .and_then(|rest| rest.strip_suffix("\")"))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn include_to_path(label: &str) -> Result<PathBuf, String> {
+    let rest = label
+        .strip_prefix("//")
+        .ok_or_else(|| format!("include label is not workspace-absolute: {label}"))?;
+    let (pkg, file) = rest
+        .split_once(':')
+        .ok_or_else(|| format!("include label has no file: {label}"))?;
+    if !file.ends_with(".MODULE.bazel") {
+        return Err(format!("include file must end in .MODULE.bazel: {label}"));
+    }
+    Ok(if pkg.is_empty() {
+        PathBuf::from(file)
+    } else {
+        Path::new(pkg).join(file)
+    })
 }
 
 struct Pin {
@@ -361,6 +415,58 @@ http_archive(
         assert!(gitz.url.ends_with(".tar.gz"));
         let firecracker = module_pin(MODULE, "http_archive", "name", "firecracker").unwrap();
         assert_eq!(firecracker.sha256.as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn follows_include_slices() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentos-module-graph-{}",
+            std::process::id()
+        ));
+        let bazel = dir.join("bazel");
+        fs::create_dir_all(&bazel).unwrap();
+        fs::write(
+            dir.join("MODULE.bazel"),
+            r#"include("//bazel:zig.MODULE.bazel")
+include("//third_party/firecracker:firecracker.MODULE.bazel")
+"#,
+        )
+        .unwrap();
+        fs::write(
+            bazel.join("zig.MODULE.bazel"),
+            r#"archive_override(
+    module_name = "gitz",
+    integrity = "sha256-abc=",
+    url = "https://github.com/OpytAI/gitz/archive/0123456789abcdef0123456789abcdef01234567.tar.gz",
+)
+"#,
+        )
+        .unwrap();
+        let fc = dir.join("third_party/firecracker");
+        fs::create_dir_all(&fc).unwrap();
+        fs::write(
+            fc.join("firecracker.MODULE.bazel"),
+            r#"http_archive(
+    name = "firecracker",
+    sha256 = "bbbb",
+    urls = ["https://example.test/firecracker.tgz"],
+)
+http_file(
+    name = "firecracker_kernel",
+    sha256 = "cccc",
+    urls = ["https://example.test/vmlinux"],
+)
+"#,
+        )
+        .unwrap();
+        let graph = load_module_graph(dir.join("MODULE.bazel").to_str().unwrap()).unwrap();
+        let gitz = module_pin(&graph, "archive_override", "module_name", "gitz").unwrap();
+        assert_eq!(gitz.integrity.as_deref(), Some("sha256-abc="));
+        let firecracker = module_pin(&graph, "http_archive", "name", "firecracker").unwrap();
+        assert_eq!(firecracker.sha256.as_deref(), Some("bbbb"));
+        let kernel = module_pin(&graph, "http_file", "name", "firecracker_kernel").unwrap();
+        assert_eq!(kernel.sha256.as_deref(), Some("cccc"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

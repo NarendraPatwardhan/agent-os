@@ -1,1 +1,4 @@
-exports_files(["BUILD.binaryen.bazel"])
+exports_files([
+    "BUILD.binaryen.bazel",
+    "binaryen.MODULE.bazel",
+])

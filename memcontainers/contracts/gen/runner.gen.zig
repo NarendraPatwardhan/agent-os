@@ -9,7 +9,7 @@ pub const RUNNER_PREPARE_SNAPSHOT_OPERATION: []const u8 = "prepare-snapshot";
 
 
 const std = @import("std");
-pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes };
+pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes, LimitExceeded };
 pub const StringPair = struct { key: []const u8, value: []const u8 };
 
 fn ctlPutU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u8) !void { try out.append(allocator, v); }
@@ -64,18 +64,18 @@ pub const RunnerHello = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RUNNER_HELLO_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RUNNER_HELLO_VERSION) return WireError.UnsupportedVersion;
-        const protocol_version = try ctlReadU32(bytes, &off);
-        const agent = try ctlReadStr(bytes, &off);
-        const kind = try ctlReadStr(bytes, &off);
-        const version = try ctlReadU32(bytes, &off);
-        const contract_digest = try ctlReadStr(bytes, &off);
+        const decoded_protocol_version = try ctlReadU32(bytes, &off);
+        const decoded_agent = try ctlReadStr(bytes, &off);
+        const decoded_kind = try ctlReadStr(bytes, &off);
+        const decoded_version = try ctlReadU32(bytes, &off);
+        const decoded_contract_digest = try ctlReadStr(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .protocol_version = protocol_version,
-            .agent = agent,
-            .kind = kind,
-            .version = version,
-            .contract_digest = contract_digest,
+            .protocol_version = decoded_protocol_version,
+            .agent = decoded_agent,
+            .kind = decoded_kind,
+            .version = decoded_version,
+            .contract_digest = decoded_contract_digest,
         };
     }
 };
@@ -107,18 +107,18 @@ pub const RunnerRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RUNNER_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RUNNER_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const request_id = try ctlReadStr(bytes, &off);
-        const kind = try ctlReadStr(bytes, &off);
-        const operation = try ctlReadStr(bytes, &off);
-        const body = try ctlReadBytes(bytes, &off);
-        const timeout_ms = try ctlReadI64(bytes, &off);
+        const decoded_request_id = try ctlReadStr(bytes, &off);
+        const decoded_kind = try ctlReadStr(bytes, &off);
+        const decoded_operation = try ctlReadStr(bytes, &off);
+        const decoded_body = try ctlReadBytes(bytes, &off);
+        const decoded_timeout_ms = try ctlReadI64(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .request_id = request_id,
-            .kind = kind,
-            .operation = operation,
-            .body = body,
-            .timeout_ms = timeout_ms,
+            .request_id = decoded_request_id,
+            .kind = decoded_kind,
+            .operation = decoded_operation,
+            .body = decoded_body,
+            .timeout_ms = decoded_timeout_ms,
         };
     }
 };
@@ -160,26 +160,26 @@ pub const RunnerResponse = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RUNNER_RESPONSE_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RUNNER_RESPONSE_VERSION) return WireError.UnsupportedVersion;
-        const request_id = try ctlReadStr(bytes, &off);
-        const ok = try ctlReadBool(bytes, &off);
-        const body = try ctlReadBytes(bytes, &off);
-        const error_code = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_request_id = try ctlReadStr(bytes, &off);
+        const decoded_ok = try ctlReadBool(bytes, &off);
+        const decoded_body = try ctlReadBytes(bytes, &off);
+        const decoded_error_code = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const error_message = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_error_message = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .request_id = request_id,
-            .ok = ok,
-            .body = body,
-            .error_code = error_code,
-            .error_message = error_message,
+            .request_id = decoded_request_id,
+            .ok = decoded_ok,
+            .body = decoded_body,
+            .error_code = decoded_error_code,
+            .error_message = decoded_error_message,
         };
     }
 };

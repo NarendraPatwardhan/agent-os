@@ -60,18 +60,18 @@ export function decodeRunnerHello(bytes: Uint8Array): RunnerHello {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== RUNNER_HELLO_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== RUNNER_HELLO_VERSION) throw new WireError("unsupported message version");
-  const protocol_version = ctlReadU32(wire);
-  const agent = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const version = ctlReadU32(wire);
-  const contract_digest = ctlReadStr(wire);
+  const decoded_protocol_version = ctlReadU32(wire);
+  const decoded_agent = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_version = ctlReadU32(wire);
+  const decoded_contract_digest = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    protocol_version,
-    agent,
-    kind,
-    version,
-    contract_digest,
+    protocol_version: decoded_protocol_version,
+    agent: decoded_agent,
+    kind: decoded_kind,
+    version: decoded_version,
+    contract_digest: decoded_contract_digest,
   };
 }
 
@@ -99,18 +99,18 @@ export function decodeRunnerRequest(bytes: Uint8Array): RunnerRequest {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== RUNNER_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== RUNNER_REQUEST_VERSION) throw new WireError("unsupported message version");
-  const request_id = ctlReadStr(wire);
-  const kind = ctlReadStr(wire);
-  const operation = ctlReadStr(wire);
-  const body = ctlReadBytes(wire);
-  const timeout_ms = ctlReadI64(wire);
+  const decoded_request_id = ctlReadStr(wire);
+  const decoded_kind = ctlReadStr(wire);
+  const decoded_operation = ctlReadStr(wire);
+  const decoded_body = ctlReadBytes(wire);
+  const decoded_timeout_ms = ctlReadI64(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    request_id,
-    kind,
-    operation,
-    body,
-    timeout_ms,
+    request_id: decoded_request_id,
+    kind: decoded_kind,
+    operation: decoded_operation,
+    body: decoded_body,
+    timeout_ms: decoded_timeout_ms,
   };
 }
 
@@ -148,27 +148,27 @@ export function decodeRunnerResponse(bytes: Uint8Array): RunnerResponse {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== RUNNER_RESPONSE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== RUNNER_RESPONSE_VERSION) throw new WireError("unsupported message version");
-  const request_id = ctlReadStr(wire);
-  const ok = ctlReadBool(wire);
-  const body = ctlReadBytes(wire);
-  let error_code: string | undefined;
+  const decoded_request_id = ctlReadStr(wire);
+  const decoded_ok = ctlReadBool(wire);
+  const decoded_body = ctlReadBytes(wire);
+  let decoded_error_code: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: error_code = undefined; break;
-    case 1: error_code = ctlReadStr(wire); break;
+    case 0: decoded_error_code = undefined; break;
+    case 1: decoded_error_code = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  let error_message: string | undefined;
+  let decoded_error_message: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: error_message = undefined; break;
-    case 1: error_message = ctlReadStr(wire); break;
+    case 0: decoded_error_message = undefined; break;
+    case 1: decoded_error_message = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    request_id,
-    ok,
-    body,
-    error_code,
-    error_message,
+    request_id: decoded_request_id,
+    ok: decoded_ok,
+    body: decoded_body,
+    error_code: decoded_error_code,
+    error_message: decoded_error_message,
   };
 }

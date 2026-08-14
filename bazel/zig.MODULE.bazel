@@ -1,0 +1,32 @@
+# Zig toolchain, C headers, skylib, and the Gitz module.
+#
+# Zig is the hermetic compiler for the shell, coreutils, sysroot, guest glue, and
+# C/C++ (sqlite via zig cc; Luau via the luauc module). rules_cc is only for
+# cc_import/cc_library header targets. skylib is build_test / diff_test / write_file.
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_zig", version = "0.16.0")
+bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+
+# Zig 0.16.0 toolchain, pinned via the local sha-locked index.
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.index(file = "//:zig_index.json")
+zig.toolchain(zig_version = "0.16.0")
+use_repo(zig, "zig_toolchains")
+
+# Cross-compile-to-wasm zig toolchains, registered in the root MODULE.bazel:
+# //platforms:wasm32_freestanding (the Rust kernel + pure guests, no libc) and
+# //platforms:wasm32_wasi (C/C++ domain tools whose runtime needs zig's
+# wasi-libc/libc++; //memcontainers/wasi-adapter then rewrites the syscall
+# imports to mc).
+
+# Gitz — pure-Zig Git library (go-git v5.19.2 port). Commit-locked 0.0.0
+# archive_override: bump commit + strip_prefix + integrity together.
+bazel_dep(name = "gitz", version = "0.0.0")
+archive_override(
+    module_name = "gitz",
+    integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    strip_prefix = "gitz-fdf9124c2aab83b6c3297be4bae8045ada7661f8",
+    url = "https://github.com/OpytAI/gitz/archive/fdf9124c2aab83b6c3297be4bae8045ada7661f8.tar.gz",
+)

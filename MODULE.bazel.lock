@@ -281,7 +281,7 @@
     "@@aspect_rules_ts+//ts:extensions.bzl%ext": {
       "general": {
         "bzlTransitiveDigest": "hj1xMWTXCn8rnhnCXINypKiSfgGUTFc2g9x3o0ZvLvg=",
-        "usagesDigest": "rp5/ZVFJKsvDNuBURz94EqdsJ5KiC6gFPwHNuxPBe5o=",
+        "usagesDigest": "Fr2jgkdU1fyfO4Aq+KlweErvu9FSfpg/mSInOFscLh0=",
         "recordedFileInputs": {
           "@@//package.json": "ca95c4de887b2a24ca43e225a9c6ea3baa478b554d30bd6ffedb15faf8591641"
         },
@@ -317,7 +317,7 @@
     "@@aspect_tools_telemetry+//:extension.bzl%telemetry": {
       "general": {
         "bzlTransitiveDigest": "cl5A2O84vDL6Tt+Qga8FCj1DUDGqn+e7ly5rZ+4xvcc=",
-        "usagesDigest": "RymJ/t457pVF1TGpwaaHHuIQfe7F3fBOjxuqAWoi7AM=",
+        "usagesDigest": "jdgEdNWPyT+LJ2zs353VCm7Eisja0JjK6nn1vLCjN60=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -326,9 +326,9 @@
             "repoRuleId": "@@aspect_tools_telemetry+//:extension.bzl%tel_repository",
             "attributes": {
               "deps": {
-                "aspect_rules_lint": "2.7.2",
                 "aspect_rules_js": "3.2.2",
                 "aspect_rules_ts": "3.8.11",
+                "aspect_rules_lint": "2.7.2",
                 "aspect_tools_telemetry": "0.3.3"
               }
             }
@@ -953,7 +953,7 @@
     "@@rules_elixir+//bzlmod:extensions.bzl%elixir_config": {
       "general": {
         "bzlTransitiveDigest": "4qFB9EtdnwfU/y4ZJmedS1PHcxZTB9Fhx8tfLzHoS84=",
-        "usagesDigest": "txCuUbIwU3LJdF56O3Ve1jEqJN7+/W7qFYB+Xh7pZDA=",
+        "usagesDigest": "sCiUfUYQXfGwBDnH3u8ZVrac4wQOha9ZhcAcAG0GCXE=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -1094,7 +1094,7 @@
     "@@rules_erlang+//bzlmod:extensions.bzl%erlang_config": {
       "general": {
         "bzlTransitiveDigest": "RfbjWwgn0pmSng+M1wmfWuCxrCwrKAQ2132yNz7wioY=",
-        "usagesDigest": "3okCGXdGAanRlrQSFwYw5J6X5hTSV2jLbtT+gedkRFg=",
+        "usagesDigest": "PA3yXpe+ARGRhg18y5kUG2+QiV042J+o3KXoQ1ET+A0=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -1798,7 +1798,7 @@
     "@@rules_nodejs+//nodejs:extensions.bzl%node": {
       "general": {
         "bzlTransitiveDigest": "4pUxCNc22K4I+6+4Nxu52Hur12tFRfa1JMsN5mdDv60=",
-        "usagesDigest": "n/uZsrDFE4qW903mc6aOKmT7nFwc9SZEkrSG4cvKocM=",
+        "usagesDigest": "Njxk+ikmqirAgxtYJC1Y+2OfOINf+4Fai6xjd1nENyw=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -1811,7 +1811,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "linux_amd64"
             }
@@ -1824,7 +1824,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "linux_arm64"
             }
@@ -1837,7 +1837,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "linux_s390x"
             }
@@ -1850,7 +1850,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "linux_ppc64le"
             }
@@ -1863,7 +1863,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "darwin_amd64"
             }
@@ -1876,7 +1876,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "darwin_arm64"
             }
@@ -1889,7 +1889,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "windows_amd64"
             }
@@ -1902,7 +1902,7 @@
               "node_urls": [
                 "https://nodejs.org/dist/v{version}/{filename}"
               ],
-              "node_version": "20.18.0",
+              "node_version": "22.22.0",
               "include_headers": false,
               "platform": "windows_arm64"
             }
@@ -2208,7 +2208,7 @@
     "@@rules_rust+//crate_universe:extensions.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "yROEPBw5DC7/hIZPOLC0FpsNfcM08rNtNWp2PhEzl9Y=",
-        "usagesDigest": "etVazcVlBRtV+bpzPo5TRuY7Tz22nSfAOb+7MLPL+KE=",
+        "usagesDigest": "jcQHrL69k4cCiio6Ypx/nQrF19kvsdjgArDZIqDqTcg=",
         "recordedFileInputs": {
           "@@//bazel/tools/mc-grammar-gen/Cargo.lock": "fb58efedbb9b9b51a339cb5b589b1629195f07e56b035f22e5d32c2e97aa5c67",
           "@@//bazel/tools/mc-grammar-gen/Cargo.toml": "61d45f1ba4cc5b6bba334209622d2a5cb3198b86f5abb25e67005b811c934c2e",
@@ -15934,7 +15934,7 @@
     "@@rules_zig+//zig:extensions.bzl%zig": {
       "general": {
         "bzlTransitiveDigest": "oxrJu3NnXBdT/VN4p2D6er1PDL1c8/0PQmvL3QUAeXQ=",
-        "usagesDigest": "9H1jbHd4zEMiVKU1kh6YFbVC8OmetUhSOTJdwwuwso0=",
+        "usagesDigest": "tq/dBaA5Buccybsl1QWbV99OlBVV0to6KXt9A8xljew=",
         "recordedFileInputs": {
           "@@//zig_index.json": "d471c2650873cbf320e98f77ba39d0815a292e2fb4752c3a6a83b35403fb9a6e",
           "@@gitz+//zig_index.json": "d471c2650873cbf320e98f77ba39d0815a292e2fb4752c3a6a83b35403fb9a6e",

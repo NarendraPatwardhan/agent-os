@@ -1,7 +1,7 @@
 // @generated from contracts/control.kdl by //contracts/codegen:projector — do not edit.
 
 const std = @import("std");
-pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes };
+pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes, LimitExceeded };
 pub const StringPair = struct { key: []const u8, value: []const u8 };
 
 fn ctlPutU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u8) !void { try out.append(allocator, v); }
@@ -49,10 +49,10 @@ pub const ExecArg = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != EXEC_ARG_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != EXEC_ARG_VERSION) return WireError.UnsupportedVersion;
-        const value = try ctlReadStr(bytes, &off);
+        const decoded_value = try ctlReadStr(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .value = value,
+            .value = decoded_value,
         };
     }
 };
@@ -101,32 +101,32 @@ pub const ExecRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != EXEC_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != EXEC_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const mode = try ctlReadI32(bytes, &off);
-        const command = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_mode = try ctlReadI32(bytes, &off);
+        const decoded_command = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const argv = try ctlReadMessageList(ExecArg, allocator, bytes, &off);
-        const cwd = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_argv = try ctlReadMessageList(ExecArg, allocator, bytes, &off);
+        const decoded_cwd = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const env = try ctlReadStrMap(allocator, bytes, &off);
-        const stdin = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_env = try ctlReadStrMap(allocator, bytes, &off);
+        const decoded_stdin = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .mode = mode,
-            .command = command,
-            .argv = argv,
-            .cwd = cwd,
-            .env = env,
-            .stdin = stdin,
+            .mode = decoded_mode,
+            .command = decoded_command,
+            .argv = decoded_argv,
+            .cwd = decoded_cwd,
+            .env = decoded_env,
+            .stdin = decoded_stdin,
         };
     }
 };
@@ -155,14 +155,14 @@ pub const ExecOutcome = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != EXEC_OUTCOME_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != EXEC_OUTCOME_VERSION) return WireError.UnsupportedVersion;
-        const exit_code = try ctlReadI32(bytes, &off);
-        const stdout = try ctlReadBytes(bytes, &off);
-        const stderr = try ctlReadBytes(bytes, &off);
+        const decoded_exit_code = try ctlReadI32(bytes, &off);
+        const decoded_stdout = try ctlReadBytes(bytes, &off);
+        const decoded_stderr = try ctlReadBytes(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .exit_code = exit_code,
-            .stdout = stdout,
-            .stderr = stderr,
+            .exit_code = decoded_exit_code,
+            .stdout = decoded_stdout,
+            .stderr = decoded_stderr,
         };
     }
 };
@@ -195,18 +195,18 @@ pub const FileStat = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != FILE_STAT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != FILE_STAT_VERSION) return WireError.UnsupportedVersion;
-        const size = try ctlReadI64(bytes, &off);
-        const is_dir = try ctlReadBool(bytes, &off);
-        const is_symlink = try ctlReadBool(bytes, &off);
-        const nlink = try ctlReadU32(bytes, &off);
-        const mode = try ctlReadU32(bytes, &off);
+        const decoded_size = try ctlReadI64(bytes, &off);
+        const decoded_is_dir = try ctlReadBool(bytes, &off);
+        const decoded_is_symlink = try ctlReadBool(bytes, &off);
+        const decoded_nlink = try ctlReadU32(bytes, &off);
+        const decoded_mode = try ctlReadU32(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .size = size,
-            .is_dir = is_dir,
-            .is_symlink = is_symlink,
-            .nlink = nlink,
-            .mode = mode,
+            .size = decoded_size,
+            .is_dir = decoded_is_dir,
+            .is_symlink = decoded_is_symlink,
+            .nlink = decoded_nlink,
+            .mode = decoded_mode,
         };
     }
 };
@@ -235,14 +235,14 @@ pub const DirEntry = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != DIR_ENTRY_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != DIR_ENTRY_VERSION) return WireError.UnsupportedVersion;
-        const name = try ctlReadStr(bytes, &off);
-        const is_dir = try ctlReadBool(bytes, &off);
-        const is_symlink = try ctlReadBool(bytes, &off);
+        const decoded_name = try ctlReadStr(bytes, &off);
+        const decoded_is_dir = try ctlReadBool(bytes, &off);
+        const decoded_is_symlink = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .name = name,
-            .is_dir = is_dir,
-            .is_symlink = is_symlink,
+            .name = decoded_name,
+            .is_dir = decoded_is_dir,
+            .is_symlink = decoded_is_symlink,
         };
     }
 };
@@ -266,10 +266,10 @@ pub const DirEntries = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != DIR_ENTRIES_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != DIR_ENTRIES_VERSION) return WireError.UnsupportedVersion;
-        const entries = try ctlReadMessageList(DirEntry, allocator, bytes, &off);
+        const decoded_entries = try ctlReadMessageList(DirEntry, allocator, bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .entries = entries,
+            .entries = decoded_entries,
         };
     }
 };
@@ -296,12 +296,12 @@ pub const SvcRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != SVC_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != SVC_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const service = try ctlReadStr(bytes, &off);
-        const request = try ctlReadBytes(bytes, &off);
+        const decoded_service = try ctlReadStr(bytes, &off);
+        const decoded_request = try ctlReadBytes(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .service = service,
-            .request = request,
+            .service = decoded_service,
+            .request = decoded_request,
         };
     }
 };
@@ -328,12 +328,12 @@ pub const SvcResponse = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != SVC_RESPONSE_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != SVC_RESPONSE_VERSION) return WireError.UnsupportedVersion;
-        const status = try ctlReadI32(bytes, &off);
-        const body = try ctlReadBytes(bytes, &off);
+        const decoded_status = try ctlReadI32(bytes, &off);
+        const decoded_body = try ctlReadBytes(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .status = status,
-            .body = body,
+            .status = decoded_status,
+            .body = decoded_body,
         };
     }
 };
@@ -444,84 +444,84 @@ pub const RelayEvent = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RELAY_EVENT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RELAY_EVENT_VERSION) return WireError.UnsupportedVersion;
-        const kind = try ctlReadStr(bytes, &off);
-        const handle = try ctlReadI32(bytes, &off);
-        const request = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_kind = try ctlReadStr(bytes, &off);
+        const decoded_handle = try ctlReadI32(bytes, &off);
+        const decoded_request = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const name = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_name = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const body = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_body = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const key = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_key = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const value = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_value = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const prefix = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_prefix = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const url = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_url = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const data = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_data = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadBytes(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const connection = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_connection = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const method = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_method = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const origin = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_origin = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const args_digest = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_args_digest = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .kind = kind,
-            .handle = handle,
-            .request = request,
-            .name = name,
-            .body = body,
-            .key = key,
-            .value = value,
-            .prefix = prefix,
-            .url = url,
-            .data = data,
-            .connection = connection,
-            .method = method,
-            .origin = origin,
-            .args_digest = args_digest,
+            .kind = decoded_kind,
+            .handle = decoded_handle,
+            .request = decoded_request,
+            .name = decoded_name,
+            .body = decoded_body,
+            .key = decoded_key,
+            .value = decoded_value,
+            .prefix = decoded_prefix,
+            .url = decoded_url,
+            .data = decoded_data,
+            .connection = decoded_connection,
+            .method = decoded_method,
+            .origin = decoded_origin,
+            .args_digest = decoded_args_digest,
         };
     }
 };
@@ -558,22 +558,22 @@ pub const AutocompleteRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const source = try ctlReadBytes(bytes, &off);
-        const cursor = try ctlReadU32(bytes, &off);
-        const cwd = switch (try ctlReadU8(bytes, &off)) {
+        const decoded_source = try ctlReadBytes(bytes, &off);
+        const decoded_cursor = try ctlReadU32(bytes, &off);
+        const decoded_cwd = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
-        const env = try ctlReadStrMap(allocator, bytes, &off);
-        const limit = try ctlReadU32(bytes, &off);
+        const decoded_env = try ctlReadStrMap(allocator, bytes, &off);
+        const decoded_limit = try ctlReadU32(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .source = source,
-            .cursor = cursor,
-            .cwd = cwd,
-            .env = env,
-            .limit = limit,
+            .source = decoded_source,
+            .cursor = decoded_cursor,
+            .cwd = decoded_cwd,
+            .env = decoded_env,
+            .limit = decoded_limit,
         };
     }
 };
@@ -602,14 +602,14 @@ pub const AutocompleteItem = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_ITEM_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_ITEM_VERSION) return WireError.UnsupportedVersion;
-        const label = try ctlReadStr(bytes, &off);
-        const value = try ctlReadStr(bytes, &off);
-        const kind = try ctlReadStr(bytes, &off);
+        const decoded_label = try ctlReadStr(bytes, &off);
+        const decoded_value = try ctlReadStr(bytes, &off);
+        const decoded_kind = try ctlReadStr(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .label = label,
-            .value = value,
-            .kind = kind,
+            .label = decoded_label,
+            .value = decoded_value,
+            .kind = decoded_kind,
         };
     }
 };
@@ -641,18 +641,18 @@ pub const AutocompleteResult = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_RESULT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_RESULT_VERSION) return WireError.UnsupportedVersion;
-        const replace_start = try ctlReadU32(bytes, &off);
-        const replace_end = try ctlReadU32(bytes, &off);
-        const common_prefix = try ctlReadStr(bytes, &off);
-        const items = try ctlReadMessageList(AutocompleteItem, allocator, bytes, &off);
-        const truncated = try ctlReadBool(bytes, &off);
+        const decoded_replace_start = try ctlReadU32(bytes, &off);
+        const decoded_replace_end = try ctlReadU32(bytes, &off);
+        const decoded_common_prefix = try ctlReadStr(bytes, &off);
+        const decoded_items = try ctlReadMessageList(AutocompleteItem, allocator, bytes, &off);
+        const decoded_truncated = try ctlReadBool(bytes, &off);
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .replace_start = replace_start,
-            .replace_end = replace_end,
-            .common_prefix = common_prefix,
-            .items = items,
-            .truncated = truncated,
+            .replace_start = decoded_replace_start,
+            .replace_end = decoded_replace_end,
+            .common_prefix = decoded_common_prefix,
+            .items = decoded_items,
+            .truncated = decoded_truncated,
         };
     }
 };

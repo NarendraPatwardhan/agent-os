@@ -1,5 +1,5 @@
 # sqlite as a guest — fetch upstream, patch in place (SYSTEMS.md, B3; SYSTEMS.md). The SQLite
-# amalgamation enters via http_archive(name = "sqlite", urls, sha256) in MODULE.bazel; ONLY our deltas
+# amalgamation enters via http_archive in sqlite.MODULE.bazel; ONLY our deltas
 # live in-tree:
 #   glue/                — the Zig serve loop + protocol + the close() shim, compiled by `zig cc`.
 #   BUILD.sqlite.bazel   — the build_file http_archive applies to the extracted source.
@@ -9,4 +9,7 @@
 
 # Exported so http_archive(build_file = "//third_party/sqlite:BUILD.sqlite.bazel") can apply it to the
 # extracted @sqlite source.
-exports_files(["BUILD.sqlite.bazel"])
+exports_files([
+    "BUILD.sqlite.bazel",
+    "sqlite.MODULE.bazel",
+])

@@ -1,10 +1,10 @@
 # agent-os build configuration.
 #
-# Seeded from bazel-experiments/compile-zig-wasm — the validated Zig-0.16-on-Bazel
-# setup the VISION (§7.1) tells us to reuse. Each line is load-bearing; the comment
-# says WHY so the next reader can extend without re-deriving it (C1).
+# Each line is load-bearing; the comment says WHY so the next reader can extend
+# without re-deriving it (C1). The graph is declared in MODULE.bazel and its
+# include() slices.
 
-# Bzlmod only — no legacy WORKSPACE. The whole graph is declared in MODULE.bazel.
+# Bzlmod only — no legacy WORKSPACE.
 common --enable_workspace=false
 
 # Tests and tools locate inputs via runfiles, never hardcoded paths. This is what
@@ -15,25 +15,26 @@ common --enable_runfiles
 # shell. No tool leaks in from $PATH (B4).
 common --incompatible_strict_action_env
 
-# Third-party C/C++ (sqlite, luau) is compiled by the hermetic `zig cc`; silence
+# Third-party C/C++ (sqlite, luauc) is compiled by the hermetic `zig cc`; silence
 # upstream warnings so they don't drown our own diagnostics.
 common --copt=-w
 common --host_copt=-w
 
-# Host git engine (GIT.md PR0+): hermetic_cc zig-cc enables UBSan by default;
-# libgit2 intentionally does unaligned loads (pack/hash). Disable so native
-# git-engine smoke/abi tests do not abort under zig-cc.
+# Host git engine: hermetic_cc zig-cc enables UBSan by default; libgit2
+# intentionally does unaligned loads (pack/hash). Disable so native git-engine
+# smoke/abi tests do not abort under zig-cc.
 build --copt=-fno-sanitize=undefined --host_copt=-fno-sanitize=undefined
 build --linkopt=-fno-sanitize=undefined --host_linkopt=-fno-sanitize=undefined
 
 # hermetic_cc zig cache lives under $HOME/.cache/zig; allow sandbox access.
 build --sandbox_add_mount_pair=/home
-# No global target platform: host-side tools (the contracts projector, later the
-# server) build for the autodetected host. musl is a property of the ONE binary that
-# links a prebuilt libwasmtime.a — hosts/wasmtime — and is applied there per-target in
-# Step 2 (//platforms:host_musl), not forced on the whole repo (VISION §8.1). Kernel
-# and guest targets transition to //platforms:wasm32_freestanding via the Zig wasm
-# toolchain regardless of this default.
+# No global target platform: host-side tools (the contracts projector, the
+# wasmtime host, the Elixir server via its scoped transition) build for the
+# autodetected host. //platforms:host_musl is an optional per-target platform
+# for a future statically linked host; it is not forced on the repo and is not
+# matching a prebuilt libwasmtime.a (wasmtime is built from @host_crates).
+# Kernel and guest targets transition to //platforms:wasm32_freestanding via
+# the Zig wasm toolchain regardless of this default.
 
 # Zig 0.16's `zig translate-c` (used by @cImport) resolves its cache from the
 # environment; rules_zig points ZIG_GLOBAL_CACHE_DIR under /tmp. Mount the real
@@ -51,7 +52,7 @@ build --workspace_status_command=bazel/workspace_status.sh
 # sync. rules_ts requires an explicit choice; this is it, repo-wide.
 common --@aspect_rules_ts//ts:default_to_tsc_transpiler
 
-# --- Elixir control-plane lane (//server) — see //MODULE.bazel ----------------
+# --- Elixir control-plane lane (//server) — see bazel/erlang.MODULE.bazel ------
 # Registries are GLOBAL because Bzlmod module resolution is global. The rabbitmq
 # erlang-packages registry is only consulted for modules absent from the BCR (the erlang hex
 # deps), and the BCR stays FIRST, so existing resolutions are unchanged. Specifying any

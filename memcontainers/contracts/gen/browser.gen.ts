@@ -82,12 +82,12 @@ export function decodeBrowserViewport(bytes: Uint8Array): BrowserViewport {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_VIEWPORT_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_VIEWPORT_VERSION) throw new WireError("unsupported message version");
-  const width = ctlReadU32(wire);
-  const height = ctlReadU32(wire);
+  const decoded_width = ctlReadU32(wire);
+  const decoded_height = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    width,
-    height,
+    width: decoded_width,
+    height: decoded_height,
   };
 }
 
@@ -116,19 +116,19 @@ export function decodeBrowserCreateOptions(bytes: Uint8Array): BrowserCreateOpti
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_CREATE_OPTIONS_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_CREATE_OPTIONS_VERSION) throw new WireError("unsupported message version");
-  const headless = ctlReadBool(wire);
-  const timeout_seconds = ctlReadU32(wire);
-  let viewport: BrowserViewport | undefined;
+  const decoded_headless = ctlReadBool(wire);
+  const decoded_timeout_seconds = ctlReadU32(wire);
+  let decoded_viewport: BrowserViewport | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: viewport = undefined; break;
-    case 1: viewport = decodeBrowserViewport(ctlReadBytes(wire)); break;
+    case 0: decoded_viewport = undefined; break;
+    case 1: decoded_viewport = decodeBrowserViewport(ctlReadBytes(wire)); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    headless,
-    timeout_seconds,
-    viewport,
+    headless: decoded_headless,
+    timeout_seconds: decoded_timeout_seconds,
+    viewport: decoded_viewport,
   };
 }
 
@@ -152,14 +152,14 @@ export function decodeBrowserMetadata(bytes: Uint8Array): BrowserMetadata {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_METADATA_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_METADATA_VERSION) throw new WireError("unsupported message version");
-  const headless = ctlReadBool(wire);
-  const viewport = decodeBrowserViewport(ctlReadBytes(wire));
-  const active_page_id = ctlReadStr(wire);
+  const decoded_headless = ctlReadBool(wire);
+  const decoded_viewport = decodeBrowserViewport(ctlReadBytes(wire));
+  const decoded_active_page_id = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    headless,
-    viewport,
-    active_page_id,
+    headless: decoded_headless,
+    viewport: decoded_viewport,
+    active_page_id: decoded_active_page_id,
   };
 }
 
@@ -183,14 +183,14 @@ export function decodeBrowserPage(bytes: Uint8Array): BrowserPage {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_PAGE_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_PAGE_VERSION) throw new WireError("unsupported message version");
-  const id = ctlReadStr(wire);
-  const url = ctlReadStr(wire);
-  const title = ctlReadStr(wire);
+  const decoded_id = ctlReadStr(wire);
+  const decoded_url = ctlReadStr(wire);
+  const decoded_title = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    id,
-    url,
-    title,
+    id: decoded_id,
+    url: decoded_url,
+    title: decoded_title,
   };
 }
 
@@ -210,10 +210,10 @@ export function decodeBrowserPages(bytes: Uint8Array): BrowserPages {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_PAGES_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_PAGES_VERSION) throw new WireError("unsupported message version");
-  const items = ctlReadMessageList(wire, decodeBrowserPage);
+  const decoded_items = ctlReadMessageList(wire, decodeBrowserPage);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    items,
+    items: decoded_items,
   };
 }
 
@@ -238,15 +238,15 @@ export function decodeBrowserPageTarget(bytes: Uint8Array): BrowserPageTarget {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_PAGE_TARGET_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_PAGE_TARGET_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
+    page_id: decoded_page_id,
   };
 }
 
@@ -275,19 +275,19 @@ export function decodeBrowserGotoRequest(bytes: Uint8Array): BrowserGotoRequest 
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_GOTO_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_GOTO_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const url = ctlReadStr(wire);
-  const wait_until = ctlReadU32(wire);
+  const decoded_url = ctlReadStr(wire);
+  const decoded_wait_until = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    url,
-    wait_until,
+    page_id: decoded_page_id,
+    url: decoded_url,
+    wait_until: decoded_wait_until,
   };
 }
 
@@ -314,17 +314,17 @@ export function decodeBrowserLocatorRequest(bytes: Uint8Array): BrowserLocatorRe
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_LOCATOR_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_LOCATOR_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const selector = ctlReadStr(wire);
+  const decoded_selector = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    selector,
+    page_id: decoded_page_id,
+    selector: decoded_selector,
   };
 }
 
@@ -353,19 +353,19 @@ export function decodeBrowserFillRequest(bytes: Uint8Array): BrowserFillRequest 
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_FILL_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_FILL_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const selector = ctlReadStr(wire);
-  const value = ctlReadStr(wire);
+  const decoded_selector = ctlReadStr(wire);
+  const decoded_value = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    selector,
-    value,
+    page_id: decoded_page_id,
+    selector: decoded_selector,
+    value: decoded_value,
   };
 }
 
@@ -394,19 +394,19 @@ export function decodeBrowserPointRequest(bytes: Uint8Array): BrowserPointReques
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_POINT_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_POINT_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const x = ctlReadU32(wire);
-  const y = ctlReadU32(wire);
+  const decoded_x = ctlReadU32(wire);
+  const decoded_y = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    x,
-    y,
+    page_id: decoded_page_id,
+    x: decoded_x,
+    y: decoded_y,
   };
 }
 
@@ -435,19 +435,19 @@ export function decodeBrowserTypeRequest(bytes: Uint8Array): BrowserTypeRequest 
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_TYPE_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_TYPE_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const text = ctlReadStr(wire);
-  const delay_ms = ctlReadU32(wire);
+  const decoded_text = ctlReadStr(wire);
+  const decoded_delay_ms = ctlReadU32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    text,
-    delay_ms,
+    page_id: decoded_page_id,
+    text: decoded_text,
+    delay_ms: decoded_delay_ms,
   };
 }
 
@@ -474,17 +474,17 @@ export function decodeBrowserKeyRequest(bytes: Uint8Array): BrowserKeyRequest {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_KEY_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_KEY_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const key = ctlReadStr(wire);
+  const decoded_key = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    key,
+    page_id: decoded_page_id,
+    key: decoded_key,
   };
 }
 
@@ -513,19 +513,19 @@ export function decodeBrowserScrollRequest(bytes: Uint8Array): BrowserScrollRequ
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_SCROLL_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_SCROLL_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const delta_x = ctlReadI32(wire);
-  const delta_y = ctlReadI32(wire);
+  const decoded_delta_x = ctlReadI32(wire);
+  const decoded_delta_y = ctlReadI32(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    delta_x,
-    delta_y,
+    page_id: decoded_page_id,
+    delta_x: decoded_delta_x,
+    delta_y: decoded_delta_y,
   };
 }
 
@@ -552,17 +552,17 @@ export function decodeBrowserScreenshotRequest(bytes: Uint8Array): BrowserScreen
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_SCREENSHOT_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_SCREENSHOT_REQUEST_VERSION) throw new WireError("unsupported message version");
-  let page_id: string | undefined;
+  let decoded_page_id: string | undefined;
   switch (ctlReadU8(wire)) {
-    case 0: page_id = undefined; break;
-    case 1: page_id = ctlReadStr(wire); break;
+    case 0: decoded_page_id = undefined; break;
+    case 1: decoded_page_id = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
-  const full_page = ctlReadBool(wire);
+  const decoded_full_page = ctlReadBool(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    page_id,
-    full_page,
+    page_id: decoded_page_id,
+    full_page: decoded_full_page,
   };
 }
 
@@ -582,10 +582,10 @@ export function decodeBrowserString(bytes: Uint8Array): BrowserString {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_STRING_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_STRING_VERSION) throw new WireError("unsupported message version");
-  const value = ctlReadStr(wire);
+  const decoded_value = ctlReadStr(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    value,
+    value: decoded_value,
   };
 }
 
@@ -605,9 +605,9 @@ export function decodeBrowserBytes(bytes: Uint8Array): BrowserBytes {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== BROWSER_BYTES_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== BROWSER_BYTES_VERSION) throw new WireError("unsupported message version");
-  const value = ctlReadBytes(wire);
+  const decoded_value = ctlReadBytes(wire);
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    value,
+    value: decoded_value,
   };
 }

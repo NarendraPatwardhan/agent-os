@@ -4,8 +4,8 @@ const fs = @import("fs");
 const paths = @import("paths.zig");
 
 pub fn stat(allocator: std.mem.Allocator, session: anytype, request: contract.MountRequest) ![]u8 {
-    const path = request.path orelse return error.MissingPath;
-    try paths.validate(path);
+    const path = request.path orelse ".";
+    try paths.validateDirectory(path);
     const info = try session.filesystem.lstat(path);
     return (contract.FileResult{ .path = path, .mode = info.mode, .size_low = lowU32(info.size), .size_high = highU32(info.size) }).encode(allocator);
 }

@@ -39,6 +39,13 @@ export function createGitFsDriver(engine: GitEngine, opts: GitFsDriverOptions = 
 
     async stat(path: string): Promise<DriverMeta> {
       try {
+        // The kernel's MountFs stats the mount point as the empty relative path.
+        // The Git engine path policy rejects "" / "." (and readDir already maps
+        // those to the worktree root via validateDirectory). Treat the mount
+        // root as a directory without asking the engine for a reserved path.
+        if (isMountRoot(path)) {
+          return { kind: "dir", size: 0 };
+        }
         const result = await engine.mountStat(path);
         return {
           kind: isDirectoryMode(result.mode) ? "dir" : "file",
@@ -105,6 +112,11 @@ export function createGitFsDriver(engine: GitEngine, opts: GitFsDriverOptions = 
     writable: false,
   });
   return driver;
+}
+
+function isMountRoot(path: string): boolean {
+  const trimmed = path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  return trimmed === "" || trimmed === ".";
 }
 
 function isDirectoryMode(mode: number): boolean {

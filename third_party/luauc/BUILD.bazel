@@ -1,0 +1,3 @@
+# luauc enters via luauc.MODULE.bazel (bazel_dep + archive_override). This
+# package exists so that include() can address the slice.
+exports_files(["luauc.MODULE.bazel"])
