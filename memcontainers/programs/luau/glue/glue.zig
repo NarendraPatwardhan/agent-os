@@ -1,11 +1,11 @@
 //! glue.zig — the Luau glue library root. Force-references EVERY glue module the luau binary compiles
 //! (kept in lockstep with :luau_raw's srcs) so the :glue_build_test compile-gate is honest: it builds
 //! exactly the Zig the binary builds, catching errors in `bazel test //...` without the (manual,
-//! expensive) full C++ link. Its `export fn`s (mc_protected_call, mc_open_sys, mc_open_json, …) are
-//! what the patched Luau C++ + entry.zig link against. See third_party/luau/SYSTEM.md.
+//! expensive) full C++ link. Its exports satisfy luauc's neutral runtime ABI and AgentOS's native
+//! library bindings used by entry.zig.
 
 comptime {
-    _ = @import("trap.zig"); // mc_protected_call / mc_raise / __mc_pcall_run (patched ldo.cpp)
+    _ = @import("trap.zig"); // neutral luauc runtime ABI + AgentOS __mc_pcall_run dispatcher
     _ = @import("sys.zig"); // mc_open_sys
     _ = @import("stdlib.zig"); // mc_open_stdlib + require
     _ = @import("json.zig"); // mc_open_json

@@ -2,7 +2,7 @@
 //! script/eval/REPL runner modelled on /bin/sh: `luau SCRIPT [args]`, `luau -e CODE`, `luau`
 //! (REPL), `luau -` (stdin), `--version`/`--help`. Errors are pcall-trapped (printed `luau: <msg>`
 //! + a traceback). Uses the Lua C API directly via @cImport — the underlying functions, since the
-//! lua_* convenience MACROS are not exposed through translate-c. See third_party/luau/SYSTEM.md.
+//! lua_* convenience macros are not exposed through translate-c.
 
 const std = @import("std");
 const mc = @import("mc"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze
@@ -22,7 +22,7 @@ extern fn luau_compile(source: [*]const u8, size: usize, options: ?*anyopaque, o
 extern fn mc_open_sys(L: ?*c.lua_State) void;
 extern fn mc_open_stdlib(L: ?*c.lua_State) void;
 
-// Force the glue modules' export fns into the binary: mc_protected_call / mc_raise / __mc_pcall_run
+// Force the glue modules' export fns into the binary: luauc's neutral runtime ABI + __mc_pcall_run
 // (linked by the patched ldo.cpp), mc_open_sys / mc_open_stdlib (the externs above). rules_zig
 // zig_library deps are Zig MODULES (for @import), not linked archives — so the glue is compiled as
 // the binary's own srcs and referenced here, rather than linked as a separate library.

@@ -3,10 +3,9 @@
 // `file:line:col: message` for each diagnostic across every module; exit non-zero
 // if any. `luau --check f.luau` execs this. Diagnostics go to stdout (like `tsc`).
 //
-// Built from the vendored Luau.Analysis (the real type-inference engine), ported to
-// the wasm guest via analysis_eh_shim.h (force-included, -fno-exceptions): Luau
-// type errors are DATA (CheckResult.errors), so ordinary checking is unaffected;
-// only internal/resource-limit conditions (which throw) degrade to a graceful abort.
+// Built from luauc's public Luau.Analysis component and its no-exception contract.
+// Luau type errors are DATA (CheckResult.errors), so ordinary checking is unaffected;
+// terminal internal and resource-limit conditions exit through luauc_analysis_abort.
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -25,9 +24,9 @@
 #include <string>
 #include <vector>
 
-// Declared by analysis_eh_shim.h (force-included into the Analysis TUs), defined
+// Declared by Luau/AnalysisEhShim.h (force-included into the Analysis TUs), defined
 // here: the graceful, noreturn exit the patched throw sites call.
-extern "C" __attribute__((noreturn)) void mc_analysis_abort(const char *what) {
+extern "C" __attribute__((noreturn)) void luauc_analysis_abort(const char *what) {
     fputs(what, stderr);
     fputc('\n', stderr);
     exit(70);

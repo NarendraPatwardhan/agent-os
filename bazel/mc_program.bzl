@@ -8,9 +8,8 @@ load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 def _cc_headers_impl(ctx):
-    # Make each `includes` entry exec-root-relative: <repo>/<package>/<inc>. For @luau (package "")
-    # → external/<repo>/VM/include; for the main-repo glue (package third_party/luau/glue, inc ".")
-    # → third_party/luau/glue.
+    # Make each `includes` entry exec-root-relative: <repo>/<package>/<inc>. This works for both
+    # external component facades and main-repository consumer packages.
     inc = [
         paths.normalize(paths.join(ctx.label.workspace_root, ctx.label.package, d))
         for d in ctx.attr.includes
