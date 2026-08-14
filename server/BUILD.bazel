@@ -236,7 +236,6 @@ pkg_tar(
         "lib/agent_os/host": "0755",
         "lib/agent_os/sidecars": "0755",
         "lib/agent_os/sidecars/firecracker": "0755",
-        "lib/agent_os/sidecars/providers": "0755",
     },
     owner = "0.0",
     package_dir = "agent_os",
@@ -358,7 +357,6 @@ pkg_tar(
         "agent_os/lib/agent_os/host",
         "agent_os/lib/agent_os/sidecars",
         "agent_os/lib/agent_os/sidecars/firecracker",
-        "agent_os/lib/agent_os/sidecars/providers",
         "agent_os/priv",
         "agent_os/priv/images",
         "agent_os/priv/kernel",
@@ -375,7 +373,6 @@ pkg_tar(
         "agent_os/lib/agent_os/host": "0755",
         "agent_os/lib/agent_os/sidecars": "0755",
         "agent_os/lib/agent_os/sidecars/firecracker": "0755",
-        "agent_os/lib/agent_os/sidecars/providers": "0755",
         "agent_os/priv": "0755",
         "agent_os/priv/images": "0755",
         "agent_os/priv/kernel": "0755",
@@ -395,22 +392,21 @@ pkg_tar(
     ],
 )
 
-sh_binary(
-    name = "package_manifest",
-    srcs = ["package_manifest.sh"],
-)
-
 package_manifest(
     name = "agent_os_package_impl",
     build_mode = "release_safe",
     capabilities = 1,
     contract_major = 1,
     contract_minor = 0,
-    gitz_commit = "fdf9124c2aab83b6c3297be4bae8045ada7661f8",
-    gitz_integrity = "sha256-maNtI/Q1Vt7LeW1d2bltDvnBUy/WQVX9ZOEXj33TOuc=",
+    elixir_version = "1.16",
+    module_file = "//:MODULE.bazel",
+    otp_version = "26.2",
     payload = ":agent_os_package_payload",
+    target_abi = "gnu",
+    target_arch = "x86_64",
+    target_os = "linux",
     tags = ["manual"],
-    tool = ":package_manifest",
+    tool = "//bazel/tools/distribution-manifest",
 )
 
 elixir_file(

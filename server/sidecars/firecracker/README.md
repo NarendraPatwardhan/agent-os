@@ -17,6 +17,8 @@ and browser runner initramfs images, root helper, and a configuration template. 
 small KVM conformance probe. The browser runner is a complete Chromium + Bun environment implementing
 the generated browser contract over the same lifecycle and runner envelope. OCI conversion strips all
 setuid and setgid bits; browser processes cannot regain root through general-purpose base-image tools.
+The bundle also carries `manifest.json`, which records its AgentOS revision, target platform, and
+digest-pinned Firecracker/kernel inputs, plus `SHA256SUMS` for its operator-installed payload.
 
 ## Host installation
 

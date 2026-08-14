@@ -1,9 +1,10 @@
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load(":defs.bzl", "firecracker_bundle")
 
 package(default_visibility = ["//visibility:public"])
 
 pkg_tar(
-    name = "bundle",
+    name = "bundle_payload",
     files = {
         ":README.md": "README.md",
         "//server/sidecars/firecracker/helper:sidecar-helper.conf": "etc/sidecar-helper.conf",
@@ -31,6 +32,19 @@ pkg_tar(
     },
     owner = "0.0",
     package_dir = "agent-os-firecracker-runner",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+firecracker_bundle(
+    name = "bundle",
+    module_file = "//:MODULE.bazel",
+    payload = ":bundle_payload",
+    target_arch = "x86_64",
+    target_os = "linux",
+    tool = "//bazel/tools/distribution-manifest",
     target_compatible_with = [
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",

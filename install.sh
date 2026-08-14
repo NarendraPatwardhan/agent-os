@@ -8,12 +8,17 @@ MODE="${AGENTOS_MODE:-}"
 IMAGE="${AGENTOS_IMAGE:-}"
 INSTALL_DIR="${AGENTOS_DIR:-$DEFAULT_DIR}"
 VERSION="${AGENTOS_VERSION:-}"
-TMP_FILES=""
+RELEASE_BASE_URL="${AGENTOS_RELEASE_BASE_URL:-}"
+TMP_FILES=()
+STAGE_DIR=""
 
 cleanup() {
-  for f in $TMP_FILES; do
+  for f in "${TMP_FILES[@]}"; do
     rm -f "$f"
   done
+  if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
+    rm -rf "$STAGE_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -39,6 +44,7 @@ Environment overrides:
   AGENTOS_IMAGE=minimal|posix|loom|atlas|paper
   AGENTOS_DIR=./agent-os
   AGENTOS_VERSION=v0.1.0
+  AGENTOS_RELEASE_BASE_URL=https://example.invalid/releases/v0.1.0  # mirrors/tests
 EOF
 }
 
@@ -100,6 +106,10 @@ select_image() {
 }
 
 download_base() {
+  if [ -n "$RELEASE_BASE_URL" ]; then
+    printf '%s' "${RELEASE_BASE_URL%/}"
+    return
+  fi
   if [ -n "$VERSION" ]; then
     printf 'https://github.com/%s/releases/download/%s' "$REPO" "$VERSION"
   else
@@ -121,12 +131,71 @@ download_asset() {
   local dest="$3"
   local url="${base}/${asset}"
   local tmp="${dest}.tmp.$$"
-  TMP_FILES="${TMP_FILES} ${tmp}"
+  TMP_FILES+=("$tmp")
 
   printf 'Downloading %s\n' "$asset"
   curl -fL --retry 3 --retry-delay 1 --connect-timeout 20 -o "$tmp" "$url"
   test -s "$tmp" || die "downloaded empty asset: $asset"
   mv "$tmp" "$dest"
+}
+
+verify_assets() {
+  local root="$1"
+  shift
+  local asset expected actual matches
+  for asset in "$@"; do
+    matches="$(awk -v wanted="$asset" '$2 == wanted { print $1 }' "${root}/SHA256SUMS")"
+    if [ -z "$matches" ] || [ "${matches#*$'\n'}" != "$matches" ]; then
+      die "SHA256SUMS has missing or duplicate entry for ${asset}"
+    fi
+    expected="$matches"
+    actual="$(sha256sum "${root}/${asset}" | awk '{ print $1 }')"
+    [ "$actual" = "$expected" ] || die "checksum mismatch: ${asset}"
+  done
+}
+
+extract_git_engine() {
+  local root="$1"
+  local archive="${root}/git-engine.tar"
+  local listing="${root}/.git-engine-entries"
+  tar -tf "$archive" >"$listing" || die "cannot list git-engine.tar"
+  while IFS= read -r entry; do
+    entry="${entry#./}"
+    case "$entry" in
+    git_engine.wasm | share | share/ | share/licenses | share/licenses/ | share/licenses/gitz | share/licenses/gitz/ | share/licenses/gitz/LICENSE) ;;
+    "") ;;
+    *) die "git-engine.tar contains unexpected entry: ${entry}" ;;
+    esac
+  done <"$listing"
+  rm "$listing"
+
+  mkdir -p "${root}/git-engine"
+  tar --no-same-owner --no-same-permissions -xf "$archive" -C "${root}/git-engine" ||
+    die "failed to extract git-engine.tar"
+  [ -f "${root}/git-engine/git_engine.wasm" ] ||
+    die "git-engine.tar missing git_engine.wasm after extract"
+  [ -f "${root}/git-engine/share/licenses/gitz/LICENSE" ] ||
+    die "git-engine.tar missing Gitz license after extract"
+}
+
+commit_install() {
+  local staged="$1"
+  local target="$2"
+  local backup="${target}.backup.$$"
+
+  if [ -L "$target" ]; then
+    die "refusing to replace symlink install target: ${target}"
+  fi
+  if [ -e "$target" ]; then
+    mv "$target" "$backup"
+  fi
+  if mv "$staged" "$target"; then
+    STAGE_DIR=""
+    if [ -e "$backup" ]; then rm -rf "$backup"; fi
+  else
+    if [ -e "$backup" ] && [ ! -e "$target" ]; then mv "$backup" "$target"; fi
+    die "failed to replace install directory"
+  fi
 }
 
 write_agent_skill() {
@@ -326,12 +395,22 @@ while [ "$#" -gt 0 ]; do
 done
 
 need curl
+need mktemp
+need sha256sum
+need tar
 
 MODE="$(prompt_mode)"
 IMAGE_ASSET="$(select_image "$MODE")"
 
-mkdir -p "$INSTALL_DIR"
-ABS_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+INSTALL_PARENT="$(dirname -- "$INSTALL_DIR")"
+INSTALL_NAME="$(basename -- "$INSTALL_DIR")"
+case "$INSTALL_NAME" in
+"" | . | .. | /) die "invalid install directory: ${INSTALL_DIR}" ;;
+esac
+mkdir -p "$INSTALL_PARENT"
+ABS_PARENT="$(cd "$INSTALL_PARENT" && pwd -P)"
+ABS_DIR="${ABS_PARENT}/${INSTALL_NAME}"
+STAGE_DIR="$(mktemp -d "${ABS_PARENT}/.${INSTALL_NAME}.install.XXXXXX")"
 BASE_URL="$(download_base)"
 
 printf 'AgentOS mode: %s\n' "$MODE"
@@ -339,26 +418,18 @@ printf 'Image: %s\n' "$IMAGE_ASSET"
 printf 'Release: %s\n' "$(release_page)"
 printf 'Target: %s\n\n' "$ABS_DIR"
 
-download_asset "$BASE_URL" "mc-core.mjs" "${ABS_DIR}/mc-core.mjs"
-download_asset "$BASE_URL" "kernel.wasm" "${ABS_DIR}/kernel.wasm"
-download_asset "$BASE_URL" "catalog-compiler.wasm" "${ABS_DIR}/catalog-compiler.wasm"
-download_asset "$BASE_URL" "$IMAGE_ASSET" "${ABS_DIR}/${IMAGE_ASSET}"
-download_asset "$BASE_URL" "git-engine.tar" "${ABS_DIR}/git-engine.tar"
-
-# Optional extract for inspection; product resolve uses the tar bytes.
-rm -rf "${ABS_DIR}/git-engine"
-mkdir -p "${ABS_DIR}/git-engine"
-if ! tar -xf "${ABS_DIR}/git-engine.tar" -C "${ABS_DIR}/git-engine"; then
-  die "failed to extract git-engine.tar"
-fi
-if [ ! -f "${ABS_DIR}/git-engine/git_engine.wasm" ]; then
-  die "git-engine.tar missing git_engine.wasm after extract"
-fi
+ASSETS=("mc-core.mjs" "kernel.wasm" "catalog-compiler.wasm" "$IMAGE_ASSET" "git-engine.tar")
+download_asset "$BASE_URL" "SHA256SUMS" "${STAGE_DIR}/SHA256SUMS"
+for asset in "${ASSETS[@]}"; do
+  download_asset "$BASE_URL" "$asset" "${STAGE_DIR}/${asset}"
+done
+verify_assets "$STAGE_DIR" "${ASSETS[@]}"
+extract_git_engine "$STAGE_DIR"
 
 # Seed local artifact cache + env for clean mc.create (no path laundry).
 CACHE_DIR="${ABS_DIR}/.artifact-cache"
-mkdir -p "${CACHE_DIR}/blobs" "${CACHE_DIR}/keys"
-cat >"${ABS_DIR}/env.sh" <<ENV
+mkdir -p "${STAGE_DIR}/.artifact-cache/blobs" "${STAGE_DIR}/.artifact-cache/keys"
+cat >"${STAGE_DIR}/env.sh" <<ENV
 # Source before running AgentOS:  . ${ABS_DIR}/env.sh
 export AGENTOS_DIR="${ABS_DIR}"
 export MC_ARTIFACT_HOME="${ABS_DIR}"
@@ -370,7 +441,7 @@ export MC_ARTIFACT_CACHE="${CACHE_DIR}"
 # Fetch stays off unless you set MC_ARTIFACT_FETCH=1
 ENV
 
-cat >"${ABS_DIR}/manifest.json" <<MAN
+cat >"${STAGE_DIR}/manifest.json" <<MAN
 {
   "version": "${VERSION:-latest}",
   "dir": "${ABS_DIR}",
@@ -385,7 +456,8 @@ cat >"${ABS_DIR}/manifest.json" <<MAN
 MAN
 
 if [ "$MODE" = "agentic" ]; then
-  write_agent_skill "$ABS_DIR" >/dev/null
+  write_agent_skill "$STAGE_DIR" >/dev/null
 fi
 
+commit_install "$STAGE_DIR" "$ABS_DIR"
 print_example "$ABS_DIR" "$IMAGE_ASSET" "$MODE"

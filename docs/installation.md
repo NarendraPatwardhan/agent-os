@@ -9,7 +9,9 @@ The installer is served by the AgentOS site. In the commands below, `{domain}` m
 the documentation you are reading; the web reference fills it in automatically.
 
 It downloads `mc-core.mjs`, `kernel.wasm`, `catalog-compiler.wasm`, `git-engine.tar`
-(extracted to `git-engine/`), and one flavor tar:
+(extracted to `git-engine/`), and one flavor tar. Every asset is checked against the release's
+`SHA256SUMS` before a staged install replaces the destination; a failed download or checksum leaves
+the existing installation intact.
 
 ```sh
 curl -fsSL {domain}/install.sh | bash

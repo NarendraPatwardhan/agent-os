@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
+
+rust_binary(
+    name = "distribution-manifest",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@host_crates//:serde_json",
+        "@host_crates//:sha2",
+    ],
+)
+
+rust_opt_test(
+    name = "test",
+    size = "small",
+    crate = ":distribution-manifest",
+    edition = "2021",
+)

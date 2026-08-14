@@ -19,6 +19,7 @@ rust_shared_library(
     name = "host_nif",
     srcs = ["src/lib.rs"],
     edition = "2021",
+    rustc_flags = ["-Cstrip=symbols"],
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
