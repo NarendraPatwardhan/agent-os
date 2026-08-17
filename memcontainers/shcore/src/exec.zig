@@ -5,13 +5,10 @@ const arith = @import("arith.zig");
 const ast = @import("ast.zig");
 const builtins = @import("builtins.zig");
 const completion = @import("completion.zig");
-const echo = @import("echo.zig");
 const expand = @import("expand.zig");
 const glob = @import("glob.zig");
 const os = @import("os.zig");
 const parser = @import("parser.zig");
-const printf = @import("printf.zig");
-const testexpr = @import("testexpr.zig");
 const token = @import("token.zig");
 const word = @import("word.zig");
 
@@ -77,11 +74,6 @@ const Started = union(enum) {
     pid: struct { pid: os.Pid, restore: []const EnvRestore },
     done: i32,
     control: Flow,
-};
-
-const StageOutput = struct {
-    fd: os.Fd,
-    temp: ?[]const u8,
 };
 
 const Snapshot = struct {
@@ -533,68 +525,62 @@ pub const Shell = struct {
         var pids = try self.allocator.alloc(?os.Pid, n);
         defer self.allocator.free(pids);
         @memset(pids, null);
-        var temps = std.ArrayList([]const u8).empty;
+
+        var plans = try self.allocator.alloc(Plan, n);
         defer {
-            for (temps.items) |path| self.allocator.free(path);
-            temps.deinit(self.allocator);
+            for (plans) |plan| self.freePlan(plan);
+            self.allocator.free(plans);
         }
-
-        const base = self.cur_fds;
-        var cur_in = base[0];
-        var cur_in_owned = false;
-
+        var inline_stage = try self.allocator.alloc(bool, n);
+        defer self.allocator.free(inline_stage);
         for (pl.cmds, 0..) |cmd, i| {
-            const is_last = i + 1 == n;
-            const plan = try self.planCommand(&cmd);
-            defer self.freePlan(plan);
-            const is_inline = switch (plan) {
+            plans[i] = try self.planCommand(&cmd);
+            inline_stage[i] = switch (plans[i]) {
                 .inline_cmd, .failed => true,
                 .simple => |simple| self.expandedRunsInline(simple.argv),
             };
+        }
 
-            if (is_inline) {
-                const out: StageOutput = if (is_last) .{ .fd = base[1], .temp = null } else blk: {
-                    const path = try self.tmpPath("pipe");
-                    const fd = self.os.open(path, os.O_WRITE | os.O_CREATE | os.O_TRUNC) catch blk2: {
-                        self.allocator.free(path);
-                        break :blk2 base[1];
-                    };
-                    if (fd == base[1]) self.allocator.free(path);
-                    break :blk .{ .fd = fd, .temp = if (fd == base[1]) null else path };
-                };
-                statuses[i] = switch (plan) {
-                    .inline_cmd => try self.runInlineStage(&cmd, .{ cur_in, out.fd, base[2] }),
-                    .simple => |simple| try self.runInlineSimple(simple.argv, simple.assigns, simple.redirs, .{ cur_in, out.fd, base[2] }),
-                    .failed => |status| status,
-                };
-                if (cur_in_owned) self.os.close(cur_in);
-                if (out.temp) |path| {
-                    self.os.close(out.fd);
-                    cur_in = self.os.open(path, os.O_READ) catch base[0];
-                    cur_in_owned = cur_in != base[0];
-                    try temps.append(self.allocator, path);
-                } else {
-                    cur_in = base[0];
-                    cur_in_owned = false;
-                }
-                continue;
-            }
+        // pipe_reads[i] is stage i's stdin when it is a pipe; pipe_writes[i] is
+        // stage i's stdout when it is a pipe. Adjacent stages share one kernel
+        // pipe: writes[i] is the write end of the same pipe whose read end is
+        // reads[i + 1].
+        var pipe_reads = try self.allocator.alloc(?os.Fd, n);
+        defer self.allocator.free(pipe_reads);
+        var pipe_writes = try self.allocator.alloc(?os.Fd, n);
+        defer self.allocator.free(pipe_writes);
+        @memset(pipe_reads, null);
+        @memset(pipe_writes, null);
 
-            const simple = switch (plan) {
-                .simple => |s| s,
-                else => unreachable,
-            };
-            const pipe_pair = if (is_last) null else self.os.pipe() catch {
+        const base = self.cur_fds;
+        var created: usize = 0;
+        while (created + 1 < n) : (created += 1) {
+            const pair = self.os.pipe() catch {
                 self.eprintln("sh: cannot create pipe");
-                if (cur_in_owned) self.os.close(cur_in);
+                self.closeOptionalFds(pipe_reads);
+                self.closeOptionalFds(pipe_writes);
                 self.last_status = 1;
                 return .normal;
             };
-            const out_fd = if (pipe_pair) |pair| pair[1] else base[1];
-            const next_in = if (pipe_pair) |pair| pair[0] else null;
+            pipe_writes[created] = pair[1];
+            pipe_reads[created + 1] = pair[0];
+        }
 
+        // Spawn every external stage first so a later reader already exists
+        // before an earlier writer can fill the pipe.
+        for (0..n) |i| {
+            if (inline_stage[i]) continue;
+            const simple = switch (plans[i]) {
+                .simple => |s| s,
+                else => unreachable,
+            };
+            const fds = .{
+                pipe_reads[i] orelse base[0],
+                pipe_writes[i] orelse base[1],
+                base[2],
+            };
             const snap = try self.snapshot();
-            const started = try self.dispatchSimple(simple.argv, simple.assigns, simple.redirs, .{ cur_in, out_fd, base[2] });
+            const started = try self.dispatchSimple(simple.argv, simple.assigns, simple.redirs, fds);
             const control_status = self.last_status;
             try self.restore(snap);
             switch (started) {
@@ -605,12 +591,26 @@ pub const Shell = struct {
                 .done => |status| statuses[i] = status,
                 .control => statuses[i] = control_status,
             }
-            if (cur_in_owned) self.os.close(cur_in);
-            if (!is_last) self.os.close(out_fd);
-            cur_in = next_in orelse base[0];
-            cur_in_owned = next_in != null;
+            self.releaseStagePipeEnds(pipe_reads, pipe_writes, i);
         }
-        if (cur_in_owned) self.os.close(cur_in);
+
+        for (pl.cmds, 0..) |cmd, i| {
+            if (!inline_stage[i]) continue;
+            const fds = .{
+                pipe_reads[i] orelse base[0],
+                pipe_writes[i] orelse base[1],
+                base[2],
+            };
+            statuses[i] = switch (plans[i]) {
+                .inline_cmd => try self.runInlineStage(&cmd, fds),
+                .simple => |simple| try self.runInlineSimple(simple.argv, simple.assigns, simple.redirs, fds),
+                .failed => |status| status,
+            };
+            self.releaseStagePipeEnds(pipe_reads, pipe_writes, i);
+        }
+
+        self.closeOptionalFds(pipe_reads);
+        self.closeOptionalFds(pipe_writes);
 
         var live = std.ArrayList(os.Pid).empty;
         defer live.deinit(self.allocator);
@@ -630,7 +630,6 @@ pub const Shell = struct {
         }
         self.leaveForeground();
 
-        for (temps.items) |path| _ = self.os.unlink(path) catch {};
         if (stopped) {
             _ = self.recordStopped(live.items, "pipeline") catch {};
             self.last_status = 128 + @intFromEnum(os.Signal.tstp);
@@ -645,6 +644,26 @@ pub const Shell = struct {
             break :blk 0;
         } else statuses[n - 1];
         return .normal;
+    }
+
+    fn releaseStagePipeEnds(self: *Shell, reads: []?os.Fd, writes: []?os.Fd, i: usize) void {
+        if (reads[i]) |fd| {
+            self.os.close(fd);
+            reads[i] = null;
+        }
+        if (writes[i]) |fd| {
+            self.os.close(fd);
+            writes[i] = null;
+        }
+    }
+
+    fn closeOptionalFds(self: *Shell, fds: []?os.Fd) void {
+        for (fds) |*slot| {
+            if (slot.*) |fd| {
+                self.os.close(fd);
+                slot.* = null;
+            }
+        }
     }
 
     const Plan = union(enum) {
@@ -1483,18 +1502,13 @@ pub const Shell = struct {
             }
         }
         return switch (builtins.lookup(name).?) {
-            .colon, .true_cmd => .{ .status = 0 },
-            .false_cmd => .{ .status = 1 },
-            .echo => .{ .status = try self.biEcho(args) },
-            .pwd => .{ .status = try self.biPwd() },
-            .printf => .{ .status = try self.biPrintf(args) },
+            .colon => .{ .status = 0 },
             .cd => .{ .status = try self.biCd(args) },
             .@"export" => .{ .status = try self.biExport(args) },
             .unset => .{ .status = self.biUnset(args) },
             .shift => .{ .status = try self.biShift(args) },
             .set => .{ .status = try self.biSet(args) },
             .read => .{ .status = try self.biRead(args) },
-            .@"test" => .{ .status = self.biTest(name, args) },
             .umount => .{ .status = self.biUmount(args) },
             .bind => .{ .status = self.biBind(args) },
             .exit => blk: {
@@ -1517,35 +1531,6 @@ pub const Shell = struct {
             .wait => .{ .status = self.biWait(args) },
             .kill => .{ .status = self.biKill(args) },
         };
-    }
-
-    fn biEcho(self: *Shell, args: []const []const u8) !i32 {
-        const bytes = try echo.render(self.allocator, args);
-        defer self.allocator.free(bytes);
-        self.writeFd(self.cur_fds[1], bytes);
-        return 0;
-    }
-
-    fn biPwd(self: *Shell) !i32 {
-        const cwd_owned = self.os.getcwd(self.allocator) catch null;
-        defer {
-            if (cwd_owned) |cwd| self.allocator.free(cwd);
-        }
-        const cwd = cwd_owned orelse "/";
-        self.writeFd(self.cur_fds[1], cwd);
-        self.writeFd(self.cur_fds[1], "\n");
-        return 0;
-    }
-
-    fn biPrintf(self: *Shell, args: []const []const u8) !i32 {
-        if (args.len == 0) {
-            self.eprintln("printf: usage: printf FORMAT [ARG...]");
-            return 1;
-        }
-        const rendered = try printf.render(self.allocator, args[0], args[1..]);
-        defer self.allocator.free(rendered.bytes);
-        self.writeFd(self.cur_fds[1], rendered.bytes);
-        return if (rendered.had_error) 1 else 0;
     }
 
     fn biCd(self: *Shell, args: []const []const u8) !i32 {
@@ -1710,14 +1695,6 @@ pub const Shell = struct {
             }
         }
         return 0;
-    }
-
-    fn biTest(self: *Shell, name: []const u8, args: []const []const u8) i32 {
-        const result = testexpr.eval(name, args, @ptrCast(self), statAdapter);
-        return switch (result) {
-            .ok => |v| if (v) 0 else 1,
-            .err => 2,
-        };
     }
 
     fn biSource(self: *Shell, args: []const []const u8) !i32 {
@@ -2156,11 +2133,6 @@ fn loopCount(args: []const []const u8) u32 {
     return @max(1, std.fmt.parseInt(u32, args[0], 10) catch 1);
 }
 
-fn statAdapter(ptr: *anyopaque, path: []const u8) ?os.FileStat {
-    const shell: *Shell = @ptrCast(@alignCast(ptr));
-    return shell.os.stat(path) catch null;
-}
-
 fn parseSignal(name: []const u8) ?os.Signal {
     if (std.mem.eql(u8, name, "1") or std.ascii.eqlIgnoreCase(name, "HUP") or std.ascii.eqlIgnoreCase(name, "SIGHUP")) return .hup;
     if (std.mem.eql(u8, name, "2") or std.ascii.eqlIgnoreCase(name, "INT") or std.ascii.eqlIgnoreCase(name, "SIGINT")) return .int;
@@ -2174,12 +2146,6 @@ fn parseSignal(name: []const u8) ?os.Signal {
 
 fn builtinHelp(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, ":")) return ": - null command\n";
-    if (std.mem.eql(u8, name, "true")) return "true - return success\n";
-    if (std.mem.eql(u8, name, "false")) return "false - return failure\n";
-    if (std.mem.eql(u8, name, "echo")) return "echo [-neE] [ARG]...\n";
-    if (std.mem.eql(u8, name, "pwd")) return "pwd\n";
-    if (std.mem.eql(u8, name, "printf")) return "printf FORMAT [ARG...]\n";
-    if (std.mem.eql(u8, name, "test") or std.mem.eql(u8, name, "[")) return "test EXPR\n";
     if (std.mem.eql(u8, name, "cd")) return "cd [DIR]\n";
     if (std.mem.eql(u8, name, "export")) return "export NAME[=VALUE]...\n";
     if (std.mem.eql(u8, name, "unset")) return "unset NAME...\n";

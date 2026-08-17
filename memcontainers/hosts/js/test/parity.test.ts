@@ -1,4 +1,5 @@
-// A3/A8 parity: boot the SAME kernel.wasm + base.tar the wasmtime e2e boots, but under THIS (JS) host,
+// A3/A8 parity: boot the SAME kernel.wasm the wasmtime e2e boots, plus the minimal image
+// (so /bin/echo, /bin/true, and /bin/printf exist as applets), but under THIS (JS) host,
 // and assert a real boot-to-prompt + a real exec + a control-channel fs round-trip + a snapshot/restore
 // round-trip. If the JS host's `env` bridge, `mc_ctl_*` protocol, or MCSN snapshot format had diverged
 // from what the kernel expects, the boot would trap or the state would not survive — so this is the
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
   }
 
   // The generated tick state is the same scheduling fact the Rust host consumes: an idle login
-  // shell waits. `true` is a shell builtin and may complete inside one bounded slice, so completion
+  // shell waits. `true` is a `/bin` applet and may complete inside one bounded slice, so completion
   // is polled immediately rather than requiring a synthetic intermediate runnable state.
   let idleState = TickState.Runnable;
   for (let i = 0; i < 8 && idleState !== TickState.Waiting; i++) idleState = host.tick();
@@ -93,13 +94,13 @@ async function main(): Promise<void> {
 
   // The same resident /bin/sh powers interactive Tab and this programmatic query. No guest task is
   // spawned: the shell parses/renders while the kernel resolves its live namespace and PATH.
-  const completion = host.autocomplete(new TextEncoder().encode("ec"), 2);
-  const echoCandidate = completion.items.find((item) => item.label === "echo");
+  const completion = host.autocomplete(new TextEncoder().encode("cd"), 2);
+  const cdCandidate = completion.items.find((item) => item.label === "cd");
   if (
     completion.replaceStart !== 0 ||
     completion.replaceEnd !== 2 ||
-    completion.commonPrefix !== "echo" ||
-    echoCandidate?.kind !== "builtin"
+    completion.commonPrefix !== "cd" ||
+    cdCandidate?.kind !== "builtin"
   ) {
     throw new Error(`autocomplete mismatch: ${JSON.stringify(completion)}`);
   }

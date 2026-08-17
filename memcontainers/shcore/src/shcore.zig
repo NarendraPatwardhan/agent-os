@@ -12,14 +12,11 @@ pub const arith = @import("arith.zig");
 pub const ast = @import("ast.zig");
 pub const builtins = @import("builtins.zig");
 pub const completion = @import("completion.zig");
-pub const echo = @import("echo.zig");
 pub const exec = @import("exec.zig");
 pub const expand = @import("expand.zig");
 pub const glob = @import("glob.zig");
 pub const os = @import("os.zig");
 pub const parser = @import("parser.zig");
-pub const printf = @import("printf.zig");
-pub const testexpr = @import("testexpr.zig");
 pub const token = @import("token.zig");
 pub const word = @import("word.zig");
 

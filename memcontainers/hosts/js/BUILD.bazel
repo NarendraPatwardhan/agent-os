@@ -34,7 +34,8 @@ npm_package(
     visibility = ["//visibility:public"],
 )
 
-# A3 two-host parity: the SAME kernel.wasm + base.tar the wasmtime e2e boots, driven by THIS host.
+# A3 two-host parity: the SAME kernel.wasm the wasmtime e2e boots, driven by THIS host, plus the
+# minimal image so `/bin/{echo,true,printf}` exist as applets (they are not shell builtins).
 # data-deps the kernel + image (the load-bearing edge: the artifacts a test runs are the ones its
 # sources produce) and passes their runfiles paths via env, exactly like the Rust e2e.
 mc_ts_project(
@@ -51,13 +52,13 @@ js_test(
     data = [
         "package.json",
         ":parity_lib",
-        "//memcontainers/images:base",
+        "//memcontainers/images:minimal",
         "//memcontainers/kernel/rust:kernel",
     ],
     entry_point = "test/parity.test.js",
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
-        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
+        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:minimal)",
     },
 )
 

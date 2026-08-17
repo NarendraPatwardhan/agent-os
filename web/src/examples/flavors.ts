@@ -8,7 +8,7 @@ export const FLAVORS: readonly Flavor[] = [
     id: "minimal",
     size: "1.2 MB",
     stacks: "base",
-    has: "A real shell plus the curated coreutils set — the builtin twins and core file ops (~15 applets), each routed to its least-privilege box.",
+    has: "A real shell plus the curated coreutils set — echo/true/false/printf/pwd/test and core file ops (~15 applets), each routed to its least-privilege box.",
     bestFor: "A clean sandbox to build your own harnesses.",
   },
   {

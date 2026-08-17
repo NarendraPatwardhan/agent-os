@@ -29,7 +29,7 @@ const help_doc = cli.Help{
     .exit = &.{.{ .code = 0, .when = "always" }},
     .deviations_from = "GNU coreutils echo",
     .deviations = &.{
-        "--help/-h and --version are honored only as the very first argument (GNU /bin/echo behavior, not the shell builtin); elsewhere they print like any other operand.",
+        "--help/-h and --version are honored only as the very first argument (GNU /bin/echo behavior); elsewhere they print like any other operand.",
         "Under -e, escapes are \\\\ \\n \\t \\r \\a \\b \\f \\v \\0 (NUL) and \\c (stops all output immediately, including the trailing newline); an unrecognized \\X is emitted verbatim as backslash+X rather than decoded.",
     },
     .examples = &.{

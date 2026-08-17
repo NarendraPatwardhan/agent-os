@@ -66,9 +66,18 @@ fn run_guest(session: &mut Session, bytes: &[u8]) -> String {
         .host
         .chmod("/tmp/admission-test.wasm", 0o755)
         .expect("chmod admission test guest");
-    // The shell writes exec diagnostics to stderr, while this harness captures terminal stdout.
-    // Echo the status through stdout so the assertion observes the real exec result.
-    session.run_for_output("/tmp/admission-test.wasm; echo status=$?")
+    // Structured exec returns the guest's exit code without needing `/bin/echo`
+    // (the base image has no coreutils). Format the same status token the
+    // assertions already match.
+    let result = session
+        .host
+        .exec(
+            "/tmp/admission-test.wasm",
+            200_000,
+            ExecOptions::default(),
+        )
+        .expect("exec admission test guest");
+    format!("status={}\r\n", result.exit_code)
 }
 
 /// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
@@ -347,24 +356,24 @@ fn tick_state_distinguishes_runnable_work_from_waiting() {
 }
 
 /// WHY: interactive Tab and headless clients must share one side-effect-free shell completion path,
-/// including shell quoting and the live VFS. GUARANTEES: the resident shell contributes builtins,
-/// the kernel contributes namespace entries, and a filename containing whitespace is returned as a
-/// presentation label plus splice-safe shell text without executing the line.
+/// including shell quoting and the live VFS. GUARANTEES: the resident shell contributes remaining
+/// special builtins, the kernel contributes namespace entries, and a filename containing whitespace
+/// is returned as a presentation label plus splice-safe shell text without executing the line.
 #[test]
 fn autocomplete_uses_resident_shell_and_live_namespace() {
     let mut s = boot();
     let command = s
         .host
-        .autocomplete(b"ec", 2, AutocompleteOptions::default())
+        .autocomplete(b"cd", 2, AutocompleteOptions::default())
         .expect("complete builtin");
     assert_eq!((command.replace_start, command.replace_end), (0, 2));
-    assert_eq!(command.common_prefix, "echo");
+    assert_eq!(command.common_prefix, "cd");
     assert!(
         command
             .items
             .iter()
-            .any(|item| item.label == "echo" && item.value == "echo" && item.kind == "builtin"),
-        "missing echo builtin: {:?}",
+            .any(|item| item.label == "cd" && item.value == "cd" && item.kind == "builtin"),
+        "missing cd builtin: {:?}",
         command.items
     );
 

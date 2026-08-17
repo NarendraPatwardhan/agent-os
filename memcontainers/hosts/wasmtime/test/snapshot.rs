@@ -88,7 +88,7 @@ fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
 
     // Default path: tracing off → no command perf, snapshot still works.
     assert!(!host.perf_enabled());
-    host.exec("true", 20_000, Default::default()).unwrap();
+    host.exec(":", 20_000, Default::default()).unwrap();
     assert!(
         host.take_command_perf().is_none(),
         "default path must not publish command perf"
@@ -99,7 +99,7 @@ fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
     host.set_perf_enabled(true).expect("enable perf");
     assert!(host.perf_enabled());
     // Generate kernel work so counters would be non-zero if left enabled in the image.
-    host.exec("true", 20_000, Default::default()).unwrap();
+    host.exec(":", 20_000, Default::default()).unwrap();
     let first = host.take_command_perf().expect("perf after traced exec");
     assert!(first.wall_ms >= 0.0);
     assert!(
@@ -110,7 +110,7 @@ fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
     assert!(host.take_command_perf().is_none());
 
     // Snapshot while tracing is on: scrub-before-copy, then re-enable session preference.
-    host.exec("true", 20_000, Default::default()).unwrap();
+    host.exec(":", 20_000, Default::default()).unwrap();
     let _ = host.take_command_perf();
     let snap = host.snapshot().unwrap();
     assert!(
@@ -130,14 +130,14 @@ fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
         !restored.perf_enabled(),
         "restore must leave host tracing off after scrub"
     );
-    restored.exec("true", 20_000, Default::default()).unwrap();
+    restored.exec(":", 20_000, Default::default()).unwrap();
     assert!(
         restored.take_command_perf().is_none(),
         "restored host must not publish perf until re-enabled"
     );
 
     restored.set_perf_enabled(true).unwrap();
-    restored.exec("true", 20_000, Default::default()).unwrap();
+    restored.exec(":", 20_000, Default::default()).unwrap();
     let perf = restored
         .take_command_perf()
         .expect("command perf after re-enable");
@@ -147,7 +147,7 @@ fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
     // Explicit scrub clears enable for a clean machine identity.
     restored.scrub_perf().unwrap();
     assert!(!restored.perf_enabled());
-    restored.exec("true", 20_000, Default::default()).unwrap();
+    restored.exec(":", 20_000, Default::default()).unwrap();
     assert!(
         restored.take_command_perf().is_none(),
         "scrubbed host must not publish command perf"

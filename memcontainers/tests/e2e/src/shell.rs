@@ -16,6 +16,18 @@ fn pipe_routes_output_between_commands() {
     assert_eq!(s.run_for_output("cat /tmp/lines | grep bar"), "bar\r\n");
 }
 
+/// WHY: `echo`/`true`/`false` are `/bin` applets, not shell builtins. A pipeline
+/// must spawn them the same way it spawns `cat` and connect them with a kernel
+/// pipe — never a temp file. GUARANTEES: `echo hello | cat` streams through the
+/// pipe, including a three-stage chain.
+#[test]
+fn pipe_spawns_echo_like_cat() {
+    let mut s = boot_posix();
+    assert_eq!(s.run_for_output("echo hello | cat"), "hello\r\n");
+    assert_eq!(s.run_for_output("echo hello | cat | cat"), "hello\r\n");
+    assert_eq!(s.run_for_output("true | echo ok"), "ok\r\n");
+}
+
 /// WHY: `>` redirection points a guest's fd 1 at a file (a PIPE/file, not the terminal), so the
 /// bytes land pure-LF. GUARANTEES: the redirected output is in the file verbatim (LF), and nothing
 /// echoes to the terminal.

@@ -113,8 +113,8 @@ genrule(
     tools = ["//bazel/tools/mc-roster"],
 )
 
-# minimal — base + the four MINIMAL boxes (the curated ~15: the carry-both builtin twins + core file
-# ops) + their symlinks. Each /bin/<applet> routes to its least-privilege mcbox-min-<tier>.
+# minimal — base + the four MINIMAL boxes (the curated ~15: echo/true/false/printf/pwd/test plus
+# core file ops) + their symlinks. Each /bin/<applet> routes to its least-privilege mcbox-min-<tier>.
 pkg_tar(
     name = "minimal",
     create_parents = False,

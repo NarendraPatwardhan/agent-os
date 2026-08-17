@@ -120,7 +120,7 @@ defmodule AgentOS.ControlPlaneTest do
       assert completion.replace_start == 0
       assert completion.replace_end == 2
       assert completion.common_prefix == "echo"
-      assert Enum.any?(completion.items, &(&1.label == "echo" and &1.kind == "builtin"))
+      assert Enum.any?(completion.items, &(&1.label == "echo" and &1.kind == "command"))
 
       assert {:ok,
               %{exit_code: 0, stdout: "/tmp/cp-exec-cwd\ntyped-env\ntyped-stdin", stderr: ""}} =

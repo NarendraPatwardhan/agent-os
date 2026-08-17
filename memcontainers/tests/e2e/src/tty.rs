@@ -57,7 +57,7 @@ fn backspace_erases_and_redraws() {
 
 /// WHY: browser terminals reach completion through the cooked Tab key, while
 /// agents call the structured API; both must use the same resident-shell
-/// broker. GUARANTEES: a unique builtin prefix is inserted without submitting
+/// broker. GUARANTEES: a unique command prefix is inserted without submitting
 /// the line, then the completed command executes normally when Enter arrives.
 #[test]
 fn tab_completes_through_the_resident_shell_broker() {
@@ -68,7 +68,7 @@ fn tab_completes_through_the_resident_shell_broker() {
     let response = s.since(mark);
     assert!(
         response.contains("pwd \r\n"),
-        "Tab did not insert the unique builtin and trailing space: {response:?}"
+        "Tab did not insert the unique command and trailing space: {response:?}"
     );
     assert!(
         response.contains("/home/user\r\n"),

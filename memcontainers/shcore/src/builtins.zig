@@ -1,4 +1,10 @@
 //! Shell builtin registry.
+//!
+//! Only commands that must run in the shell process live here: special
+//! POSIX builtins, job control, and AgentOS-specific `umount`/`bind`.
+//! Utility twins (`echo`, `printf`, `pwd`, `true`, `false`, `test`, `[`)
+//! ship as `/bin` applets in both the minimal and posix images and are
+//! spawned like any other program.
 
 pub const Builtin = enum {
     cd,
@@ -9,13 +15,7 @@ pub const Builtin = enum {
     read,
     set,
     shift,
-    @"test",
     colon,
-    true_cmd,
-    false_cmd,
-    echo,
-    pwd,
-    printf,
     source,
     eval,
     local,
@@ -34,10 +34,9 @@ pub const Builtin = enum {
 /// Canonical spellings exposed by the shell. Keep aliases here as well: this
 /// table is both the completion vocabulary and the registry's public surface.
 pub const names = [_][]const u8{
-    "cd",       "export", "unset", "exit",   "return", "read",  "set",
-    "shift",    "test",   "[",     ":",      "true",   "false", "echo",
-    "pwd",      "printf", ".",     "source", "eval",   "local", "break",
-    "continue", "jobs",   "fg",    "bg",     "kill",   "wait",  "command",
+    "cd",       "export", "unset", "exit",     "return", "read", "set",
+    "shift",    ":",      ".",     "source",   "eval",   "local", "break",
+    "continue", "jobs",   "fg",    "bg",       "kill",   "wait", "command",
     "umount",   "bind",
 };
 
@@ -50,14 +49,7 @@ pub fn lookup(name: []const u8) ?Builtin {
     if (eq(name, "read")) return .read;
     if (eq(name, "set")) return .set;
     if (eq(name, "shift")) return .shift;
-    if (eq(name, "test")) return .@"test";
-    if (eq(name, "[")) return .@"test";
     if (eq(name, ":")) return .colon;
-    if (eq(name, "true")) return .true_cmd;
-    if (eq(name, "false")) return .false_cmd;
-    if (eq(name, "echo")) return .echo;
-    if (eq(name, "pwd")) return .pwd;
-    if (eq(name, "printf")) return .printf;
     if (eq(name, ".")) return .source;
     if (eq(name, "source")) return .source;
     if (eq(name, "eval")) return .eval;

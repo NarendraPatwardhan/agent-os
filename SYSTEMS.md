@@ -945,10 +945,13 @@ straight-line code — it relies on the kernel turning a blocking syscall into c
 there is no async coloring. There is **no `fork`**: `spawn` loads a new program image, and subshells and
 command substitution run in-process via snapshot/restore of the interpreter state, with `$(...)`
 capturing into an in-memory buffer pointed at a virtual negative fd that cannot collide with a real one.
-Pipelines stream external commands through real pipes while running builtins/functions as in-process
-subshells writing to a temp file between stages (avoiding deadlock on a full pipe with no reader). Job
-control is real: setpgid, foreground-pgid, SIGTSTP-driven stop, `fg`/`bg`. The builtin set is the
-expected POSIX one plus `test`/`[`.
+Pipelines connect every stage with a real kernel pipe. External commands — including `/bin/echo`,
+`/bin/printf`, `/bin/pwd`, `/bin/true`, `/bin/false`, and `/bin/test` — are spawned as separate
+tasks so a later reader exists before an earlier writer can fill the pipe. Remaining in-process
+stages (special builtins, functions, compounds) write to that same pipe after the external
+stages have been started. Job control is real: setpgid, foreground-pgid, SIGTSTP-driven stop,
+`fg`/`bg`. The builtin set is the POSIX specials plus job control and `umount`/`bind`; utility
+twins live only as `/bin` applets in the minimal and posix images.
 
 Shell completion follows the same ownership split. `shell.kdl` projects a small resident-control ABI
 and typed messages into Rust and Zig. The kernel sends a `ProbeRequest` to pid 1; shcore performs a
